@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Futures Bot Control Room</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  </head>
+  <body>
+    <div class="background-glow glow-a"></div>
+    <div class="background-glow glow-b"></div>
+    <main class="shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Binance Futures Bot</p>
+          <p class="lede">
+            Track equity, margin usage, liquidation risk, open positions, and the strategy decisions driving each trade.
+          </p>
+        </div>
+        <div class="hero-actions">
+          <button data-action="start">Start</button>
+          <button data-action="run-once" class="secondary">Run Once</button>
+          <button data-action="pause" class="ghost">Pause</button>
+          <button data-action="stop" class="danger">Stop</button>
+        </div>
+      </section>
+
+      <section class="metrics" id="metrics"></section>
+
+      <section class="panel-grid">
+        <article class="panel chart-panel">
+          <div class="panel-head">
+            <h2>Equity and PnL</h2>
+            <p>Snapshot from the current engine state.</p>
+          </div>
+          <canvas id="performanceChart" height="120"></canvas>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Bot State</h2>
+            <p>Control the engine and inspect the active profile.</p>
+          </div>
+          <div id="botState" class="state-block"></div>
+        </article>
+      </section>
+
+      <section class="panel-grid two-col">
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Open Positions</h2>
+            <p>Manually close any trade at any time.</p>
+          </div>
+          <div id="positions"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Recent Trades</h2>
+            <p>Trade history stored locally in SQLite.</p>
+          </div>
+          <div id="trades"></div>
+        </article>
+      </section>
+
+      <section class="panel-grid two-col">
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Strategy Profile</h2>
+            <p>Save, load, and share strategy configurations.</p>
+          </div>
+          <div id="strategies" class="stack"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Signal Feed</h2>
+            <p>Latest strategy score per symbol.</p>
+          </div>
+          <div id="signals" class="stack"></div>
+        </article>
+      </section>
+
+      <section class="panel-grid">
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Backtest Runner</h2>
+            <p>Run a single profile or compare built-in strategies without leaving the dashboard.</p>
+          </div>
+          <div id="backtestControls" class="stack"></div>
+          <div id="backtestResult" class="stack"></div>
+        </article>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "futures-bot"
+version = "0.1.0"
+description = "A Binance futures trading bot with technical analysis strategies and a local monitoring dashboard."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.111",
+  "uvicorn>=0.30",
+  "python-dotenv>=1.0.1",
+]
+
+[project.scripts]
+futures-bot = "futures_bot.main:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
