@@ -24,6 +24,7 @@ class ExecutionAdapter(Protocol):
 @dataclass(slots=True)
 class BaseExecution:
     initial_equity: float
+    trailing_stop_pct: float = 0.0
     balance: float = field(init=False)
     realized_pnl: float = field(default=0.0, init=False)
     positions: dict[str, Position] = field(default_factory=dict, init=False)
@@ -43,7 +44,8 @@ class BaseExecution:
         position = self.positions.get(symbol)
         if position:
             position.mark(price)
-            position.update_trailing_stop(self._trailing_stop_pct(position))
+            if self.trailing_stop_pct > 0:
+                position.update_trailing_stop(self.trailing_stop_pct)
 
     def snapshot(self) -> DashboardMetrics:
         unrealized = sum(
@@ -76,12 +78,3 @@ class BaseExecution:
             denom = max(position.current_price, 1e-9)
             risks.append(max(min(100 - (gap / denom) * 100, 100.0), 0.0))
         return sum(risks) / len(risks)
-
-    def _trailing_stop_pct(self, position: Position) -> float:
-        if position.side == Side.LONG:
-            if position.current_price <= 0:
-                return 0.0
-            return max((position.current_price - position.trailing_stop_price) / position.current_price * 100, 0.0)
-        if position.current_price <= 0:
-            return 0.0
-        return max((position.trailing_stop_price - position.current_price) / position.current_price * 100, 0.0)

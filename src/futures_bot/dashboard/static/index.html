@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Futures Bot Control Room</title>
-    <link rel="stylesheet" href="/static/style.css" />
+    <link rel="stylesheet" href="/static/style.css?v=20260719-redesign5" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   </head>
   <body>
@@ -29,7 +29,7 @@
 
       <section class="metrics" id="metrics"></section>
 
-      <section class="panel-grid">
+      <section class="panel-grid primary-grid">
         <article class="panel chart-panel">
           <div class="panel-head">
             <h2>Equity and PnL</h2>
@@ -48,41 +48,13 @@
         </article>
       </section>
 
-      <section class="panel-grid two-col">
-        <article class="panel">
-          <div class="panel-head">
-            <h2>Exchange Overview</h2>
-            <p>Runtime market and exchange settings for the active session.</p>
-          </div>
-          <div id="exchangeOverview" class="stack"></div>
-        </article>
-
+      <section class="panel-grid two-col execution-grid">
         <article class="panel">
           <div class="panel-head">
             <h2>Open Positions</h2>
             <p>Manually close any trade at any time.</p>
           </div>
           <div id="positions"></div>
-        </article>
-      </section>
-
-      <section class="panel-grid two-col">
-        <article class="panel">
-          <div class="panel-head">
-            <h2>Recent Trades</h2>
-            <p>Trade history stored locally in SQLite.</p>
-          </div>
-          <div id="trades"></div>
-        </article>
-      </section>
-
-      <section class="panel-grid two-col">
-        <article class="panel">
-          <div class="panel-head">
-            <h2>Strategy Profile</h2>
-            <p>Save, load, and share strategy configurations.</p>
-          </div>
-          <div id="strategies" class="stack"></div>
         </article>
 
         <article class="panel">
@@ -94,7 +66,35 @@
         </article>
       </section>
 
-      <section class="panel-grid">
+      <section class="panel-grid two-col config-grid">
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Strategy Profile</h2>
+            <p>Save, load, and share strategy configurations.</p>
+          </div>
+          <div id="strategies" class="stack"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Exchange Overview</h2>
+            <p>Runtime market and exchange settings for the active session.</p>
+          </div>
+          <div id="exchangeOverview" class="stack"></div>
+        </article>
+      </section>
+
+      <section class="panel-grid two-col trades-grid">
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Recent Trades</h2>
+            <p>Trade history stored locally in SQLite.</p>
+          </div>
+          <div id="trades"></div>
+        </article>
+      </section>
+
+      <section class="panel-grid backtest-grid">
         <article class="panel">
           <div class="panel-head">
             <h2>Backtest Runner</h2>
@@ -105,6 +105,6 @@
         </article>
       </section>
     </main>
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=20260719-all-symbols"></script>
   </body>
 </html>

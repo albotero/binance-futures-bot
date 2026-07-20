@@ -54,6 +54,7 @@ class TradingEngine:
             config.api_key, config.api_secret, config.binance_base_url)
         self.execution: BaseExecution = self._create_execution(config)
         self.storage = SQLiteStore(config.db_path)
+        self._restore_account_metrics()
         self.profile = load_strategy_profile(config, config.strategy_profile)
         self.thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -61,8 +62,17 @@ class TradingEngine:
 
     def _create_execution(self, config: BotConfig) -> BaseExecution:
         if config.mode.lower() == "live":
-            return BinanceFuturesExecution(initial_equity=config.initial_equity, api_key=config.api_key, api_secret=config.api_secret, base_url=config.binance_base_url)
-        return PaperExecution(initial_equity=config.initial_equity)
+            return BinanceFuturesExecution(
+                initial_equity=config.initial_equity,
+                trailing_stop_pct=config.trailing_stop_pct,
+                api_key=config.api_key,
+                api_secret=config.api_secret,
+                base_url=config.binance_base_url,
+            )
+        return PaperExecution(
+            initial_equity=config.initial_equity,
+            trailing_stop_pct=config.trailing_stop_pct,
+        )
 
     def _validate_mode(self) -> None:
         if self.config.mode.lower() != "live":
@@ -115,16 +125,18 @@ class TradingEngine:
         return self.config.symbols
 
     def manually_close(self, symbol: str) -> Position | None:
-        position = self.execution.get_position(symbol)
-        if not position:
-            return None
-        current_price = self.data.latest_price(symbol)
-        closed = self.execution.close_position(
-            symbol, current_price, TradeStatus.MANUAL_CLOSE.value)
-        if closed:
-            self.storage.record_close(closed)
-            self.state.halted_symbols.add(symbol)
-        return closed
+        with self._lock:
+            position = self.execution.get_position(symbol)
+            if not position:
+                return None
+            current_price = self.data.latest_price(symbol)
+            closed = self.execution.close_position(
+                symbol, current_price, TradeStatus.MANUAL_CLOSE.value)
+            if closed:
+                self.storage.record_close(closed)
+                self.state.halted_symbols.add(symbol)
+                self._record_snapshot(utcnow().isoformat())
+            return closed
 
     def status(self) -> dict:
         thread_alive = bool(self.thread and self.thread.is_alive())
@@ -171,16 +183,24 @@ class TradingEngine:
                 except Exception as exc:  # noqa: BLE001
                     self.state.last_error = f"{symbol}: {exc}"
 
-            self.storage.store_snapshot({
-                "created_at": self.state.last_run_at,
-                "metrics": asdict(self.execution.snapshot()),
-                "state": self.state.to_dict(),
-            })
+            self._record_snapshot(self.state.last_run_at)
+
+    def _restore_account_metrics(self) -> None:
+        realized = self.storage.total_realized_pnl()
+        self.execution.realized_pnl = realized
+        self.execution.balance = self.execution.initial_equity + realized
+
+    def _record_snapshot(self, created_at: str) -> None:
+        self.storage.store_snapshot({
+            "created_at": created_at,
+            "metrics": asdict(self.execution.snapshot()),
+            "state": self.state.to_dict(),
+        })
 
     def _sync_position(self, symbol: str, current_price: float, evaluation: StrategyEvaluation) -> None:
         existing = self.execution.get_position(symbol)
         if existing:
-            existing.mark(current_price)
+            self.execution.mark_price(symbol, current_price)
             should_close, close_reason = existing.should_close()
             if should_close:
                 closed = self.execution.close_position(

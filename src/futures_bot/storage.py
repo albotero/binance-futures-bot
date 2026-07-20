@@ -32,6 +32,9 @@ class SQLiteStore:
                     exit_price REAL,
                     realized_pnl REAL DEFAULT 0,
                     strategy TEXT,
+                    stop_loss_price REAL,
+                    take_profit_price REAL,
+                    trailing_stop_price REAL,
                     status TEXT NOT NULL,
                     close_reason TEXT,
                     opened_at TEXT NOT NULL,
@@ -40,6 +43,7 @@ class SQLiteStore:
                 )
                 """
             )
+            self._ensure_trade_columns(conn)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS snapshots (
@@ -50,13 +54,27 @@ class SQLiteStore:
                 """
             )
 
+    def _ensure_trade_columns(self, conn: sqlite3.Connection) -> None:
+        rows = conn.execute("PRAGMA table_info(trades)").fetchall()
+        columns = {row[1] for row in rows}
+        for name, column_type in (
+            ("stop_loss_price", "REAL"),
+            ("take_profit_price", "REAL"),
+            ("trailing_stop_price", "REAL"),
+        ):
+            if name not in columns:
+                conn.execute(
+                    f"ALTER TABLE trades ADD COLUMN {name} {column_type}")
+
     def record_open(self, position: Position, metadata: dict[str, Any] | None = None) -> int:
         with self.connection() as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO trades (
-                    symbol, side, quantity, entry_price, strategy, status, opened_at, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    symbol, side, quantity, entry_price, strategy,
+                    stop_loss_price, take_profit_price, trailing_stop_price,
+                    status, opened_at, metadata
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     position.symbol,
@@ -64,6 +82,9 @@ class SQLiteStore:
                     position.quantity,
                     position.entry_price,
                     position.strategy,
+                    position.stop_loss_price,
+                    position.take_profit_price,
+                    position.trailing_stop_price,
                     position.status.value,
                     position.opened_at,
                     json.dumps(metadata or {}, sort_keys=True),
@@ -99,6 +120,15 @@ class SQLiteStore:
             rows = conn.execute(
                 "SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         return [dict(row) for row in rows]
+
+    def total_realized_pnl(self) -> float:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(realized_pnl), 0.0) AS total FROM trades WHERE closed_at IS NOT NULL"
+            ).fetchone()
+        if not row:
+            return 0.0
+        return float(row["total"] or 0.0)
 
     def list_snapshots(self, limit: int = 500) -> list[dict[str, Any]]:
         with self.connection() as conn:

@@ -37,6 +37,8 @@ class BacktestSymbolReport:
     net_pnl: float = 0.0
     win_rate: float = 0.0
     max_drawdown: float = 0.0
+    counted: bool = True
+    skip_reason: str = ""
 
 
 @dataclass(slots=True)
@@ -48,6 +50,9 @@ class BacktestReport:
     net_pnl: float
     win_rate: float
     max_drawdown: float
+    requested_symbols: int = 0
+    counted_symbols: int = 0
+    skipped_symbols: list[str] = field(default_factory=list)
     symbol_reports: list[BacktestSymbolReport] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
@@ -78,15 +83,39 @@ def run_backtest_suite(
     config: BotConfig,
     profiles: list[StrategyProfile],
     symbols: list[str] | None = None,
+    all_symbols: bool = False,
 ) -> BacktestSuiteResult:
     market_data = BinanceMarketData(
         config.api_key, config.api_secret, config.binance_base_url)
-    selected_symbols = [symbol.upper()
-                        for symbol in (symbols or config.symbols)]
+    selected_symbols = resolve_backtest_symbols(
+        config, market_data, symbols=symbols, all_symbols=all_symbols)
     created_at = utcstamp()
     reports = [run_backtest(config, market_data, profile,
                             selected_symbols) for profile in profiles]
     return BacktestSuiteResult(created_at=created_at, reports=reports)
+
+
+def resolve_backtest_symbols(
+    config: BotConfig,
+    market_data: BinanceMarketData,
+    symbols: list[str] | None = None,
+    all_symbols: bool = False,
+) -> list[str]:
+    if all_symbols:
+        fetched = market_data.list_symbols(config.quote_asset)
+        normalized = [symbol.strip().upper()
+                      for symbol in fetched if symbol and symbol.strip()]
+        if not normalized:
+            raise ValueError(
+                f"No trading symbols found for quote asset {config.quote_asset}")
+        return sorted(set(normalized))
+
+    selected = symbols or config.symbols
+    normalized = [str(symbol).strip().upper()
+                  for symbol in selected if str(symbol).strip()]
+    if normalized:
+        return normalized
+    return [str(symbol).upper() for symbol in config.symbols]
 
 
 def run_backtest(
@@ -100,18 +129,36 @@ def run_backtest(
 
     allocation = max(config.initial_equity / max(len(symbols), 1), 1.0)
     symbol_reports: list[BacktestSymbolReport] = []
+    skipped_symbols: list[str] = []
     total_final_equity = 0.0
-    total_start_equity = allocation * len(symbols)
+    counted_symbols = 0
 
     for symbol in symbols:
-        candles = market_data.fetch_candles(
-            symbol, config.interval, config.candles_limit)
-        if not candles:
-            raise ValueError(f"No candles returned for {symbol}")
-        result = _run_symbol_backtest(
-            config, profile, symbol, candles, allocation)
-        symbol_reports.append(result)
-        total_final_equity += result.final_equity
+        try:
+            candles = market_data.fetch_candles(
+                symbol, config.interval, config.candles_limit)
+            if not candles:
+                raise ValueError("No candles returned")
+            result = _run_symbol_backtest(
+                config, profile, symbol, candles, allocation)
+            symbol_reports.append(result)
+            total_final_equity += result.final_equity
+            counted_symbols += 1
+        except Exception as exc:  # noqa: BLE001
+            skipped_symbols.append(symbol)
+            symbol_reports.append(
+                BacktestSymbolReport(
+                    symbol=symbol,
+                    final_equity=0.0,
+                    net_pnl=0.0,
+                    win_rate=0.0,
+                    max_drawdown=0.0,
+                    counted=False,
+                    skip_reason=str(exc),
+                )
+            )
+
+    total_start_equity = allocation * counted_symbols
 
     all_trades = [
         trade for report in symbol_reports for trade in report.trades]
@@ -126,6 +173,9 @@ def run_backtest(
         net_pnl=total_final_equity - total_start_equity,
         win_rate=win_rate,
         max_drawdown=max_drawdown,
+        requested_symbols=len(symbols),
+        counted_symbols=counted_symbols,
+        skipped_symbols=skipped_symbols,
         symbol_reports=symbol_reports,
     )
 
@@ -143,10 +193,11 @@ def compare_profiles(
     config: BotConfig,
     profile_names: list[str],
     symbols: list[str] | None = None,
+    all_symbols: bool = False,
 ) -> BacktestSuiteResult:
     profiles = [_single_strategy_profile(
         name, config.candle_style) for name in profile_names]
-    return run_backtest_suite(config, profiles, symbols)
+    return run_backtest_suite(config, profiles, symbols, all_symbols=all_symbols)
 
 
 def _single_strategy_profile(strategy_name: str, candle_style: str) -> StrategyProfile:
@@ -172,7 +223,10 @@ def _run_symbol_backtest(
     candles: list[dict[str, float]],
     start_equity: float,
 ) -> BacktestSymbolReport:
-    execution = PaperExecution(initial_equity=start_equity)
+    execution = PaperExecution(
+        initial_equity=start_equity,
+        trailing_stop_pct=config.trailing_stop_pct,
+    )
     trades: list[BacktestTrade] = []
     equity_curve: list[float] = [start_equity]
     peak_equity = start_equity
@@ -226,6 +280,7 @@ def _sync_symbol_position(
     existing = execution.get_position(symbol)
     if existing:
         existing.mark(current_price)
+        existing.update_trailing_stop(config.trailing_stop_pct)
         should_close, close_reason = existing.should_close()
         if should_close:
             closed = execution.close_position(

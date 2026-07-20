@@ -29,6 +29,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--compare", nargs="*", default=[], help="Built-in strategy names to compare")
     backtest_parser.add_argument(
         "--symbol", action="append", dest="symbols", help="Symbol to include in the backtest")
+    backtest_parser.add_argument(
+        "--all-symbols",
+        action="store_true",
+        help="Backtest all available symbols for BOT_QUOTE_ASSET",
+    )
 
     return parser
 
@@ -48,10 +53,20 @@ def main() -> None:
         selected_symbols = [symbol.upper()
                             for symbol in (args.symbols or config.symbols)]
         if args.compare:
-            report = compare_profiles(config, args.compare, selected_symbols)
+            report = compare_profiles(
+                config,
+                args.compare,
+                None if args.all_symbols else selected_symbols,
+                all_symbols=args.all_symbols,
+            )
         else:
             profile = load_strategy_profile(config, args.profile)
-            report = run_backtest_suite(config, [profile], selected_symbols)
+            report = run_backtest_suite(
+                config,
+                [profile],
+                None if args.all_symbols else selected_symbols,
+                all_symbols=args.all_symbols,
+            )
         path = save_backtest_report(report, config.data_dir)
         print(f"Saved backtest report to {path}")
         for item in report.reports:

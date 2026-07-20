@@ -235,7 +235,7 @@ function renderPositions(positions) {
       <table>
         <thead>
           <tr>
-            <th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Mark</th><th>PnL</th><th>Action</th>
+            <th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Mark</th><th>SL</th><th>TP</th><th>PnL</th><th>Action</th>
           </tr>
         </thead>
         <tbody>
@@ -248,6 +248,8 @@ function renderPositions(positions) {
               <td>${formatNumber(position.quantity, 4)}</td>
               <td>${formatMoney(position.entry_price)}</td>
               <td>${formatMoney(position.current_price)}</td>
+              <td>${position.stop_loss_price != null ? formatMoney(position.stop_loss_price) : "-"}</td>
+              <td>${position.take_profit_price != null ? formatMoney(position.take_profit_price) : "-"}</td>
               <td class="${position.unrealized_pnl >= 0 ? "positive" : "negative"}">${formatMoney(position.unrealized_pnl)}</td>
               <td><button class="danger" data-close-symbol="${position.symbol}">Close</button></td>
             </tr>
@@ -271,7 +273,7 @@ function renderTrades(trades) {
       <table>
         <thead>
           <tr>
-            <th>Time</th><th>Symbol</th><th>Side</th><th>Status</th><th>PnL</th>
+            <th>Time</th><th>Symbol</th><th>Side</th><th>SL</th><th>TP</th><th>Status</th><th>PnL</th>
           </tr>
         </thead>
         <tbody>
@@ -282,6 +284,8 @@ function renderTrades(trades) {
               <td>${formatUtcHuman(trade.closed_at || trade.opened_at)}</td>
               <td>${trade.symbol}</td>
               <td>${trade.side}</td>
+              <td>${trade.stop_loss_price != null ? formatMoney(trade.stop_loss_price) : "-"}</td>
+              <td>${trade.take_profit_price != null ? formatMoney(trade.take_profit_price) : "-"}</td>
               <td>${trade.status}</td>
               <td class="${Number(trade.realized_pnl || 0) >= 0 ? "positive" : "negative"}">${formatMoney(trade.realized_pnl)}</td>
             </tr>
@@ -337,6 +341,7 @@ function renderBacktestControls() {
       profile: activeProfile,
       compareText: "",
       symbolsText: symbols.join(","),
+      allSymbols: false,
       interval,
       candlesLimit,
       leverage,
@@ -360,7 +365,11 @@ function renderBacktestControls() {
       </label>
       <label>
         Symbols (comma-separated)
-        <input id="backtestSymbols" type="text" value="${state.backtestForm.symbolsText}" placeholder="BTCUSDT,ETHUSDT" ${state.backtestLoading ? "disabled" : ""} />
+        <input id="backtestSymbols" type="text" value="${state.backtestForm.symbolsText}" placeholder="BTCUSDT,ETHUSDT" ${state.backtestLoading || state.backtestForm.allSymbols ? "disabled" : ""} />
+      </label>
+      <label>
+        All symbols for quote asset
+        <input id="backtestAllSymbols" type="checkbox" ${state.backtestForm.allSymbols ? "checked" : ""} ${state.backtestLoading ? "disabled" : ""} />
       </label>
       <label>
         Interval
@@ -393,6 +402,7 @@ function captureBacktestFormFromDom() {
     profile: document.getElementById("backtestProfile")?.value || state.backtestForm?.profile || "default",
     compareText: document.getElementById("backtestCompare")?.value || "",
     symbolsText: document.getElementById("backtestSymbols")?.value || "",
+    allSymbols: Boolean(document.getElementById("backtestAllSymbols")?.checked),
     interval: document.getElementById("backtestInterval")?.value?.trim() || "5m",
     candlesLimit: Number(document.getElementById("backtestCandlesLimit")?.value || 200),
     leverage: Number(document.getElementById("backtestLeverage")?.value || 3),
@@ -474,11 +484,15 @@ function renderBacktestResult() {
     })
     .join("")
 
+  const symbolsLine = context.all_symbols
+    ? `All ${context.quote_asset || "quote"} symbols`
+    : (context.symbols || []).join(", ") || "n/a"
+
   root.innerHTML = `
     <div class="pill"><strong>${runMode}</strong></div>
     <div class="pill">Window: ${context.interval || "n/a"} × ${context.candles_limit || "n/a"} candles</div>
     <div class="pill">Leverage: ${context.leverage || "n/a"}x</div>
-    <div class="pill">Symbols: ${(context.symbols || []).join(", ") || "n/a"}</div>
+    <div class="pill">Symbols: ${symbolsLine}</div>
     <div class="pill">Report: ${data.path || "n/a"}</div>
     <div class="metrics stack-metrics">${cards}</div>
     <div class="muted">How to read this: Net PnL is total simulated profit/loss. Win rate is percent of profitable trades. Max drawdown is the worst peak-to-trough equity decline.</div>
@@ -592,6 +606,7 @@ async function runBacktestFromDashboard() {
   const profile = state.backtestForm.profile || "default"
   const compareText = state.backtestForm.compareText || ""
   const symbolsText = state.backtestForm.symbolsText || ""
+  const allSymbols = Boolean(state.backtestForm.allSymbols)
   const interval = state.backtestForm.interval || "5m"
   const candlesLimit = Number(state.backtestForm.candlesLimit || 200)
   const leverage = Number(state.backtestForm.leverage || 3)
@@ -613,6 +628,7 @@ async function runBacktestFromDashboard() {
   const payload = {
     profile,
     symbols,
+    all_symbols: allSymbols,
     interval,
     candles_limit: candlesLimit,
     leverage,
@@ -706,6 +722,7 @@ document.addEventListener("input", (event) => {
     target.id === "backtestProfile" ||
     target.id === "backtestCompare" ||
     target.id === "backtestSymbols" ||
+    target.id === "backtestAllSymbols" ||
     target.id === "backtestInterval" ||
     target.id === "backtestCandlesLimit" ||
     target.id === "backtestLeverage"
@@ -721,6 +738,11 @@ document.addEventListener("change", (event) => {
   }
   if (target.id === "backtestProfile") {
     captureBacktestFormFromDom()
+    return
+  }
+  if (target.id === "backtestAllSymbols") {
+    captureBacktestFormFromDom()
+    renderBacktestControls()
   }
 })
 

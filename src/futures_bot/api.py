@@ -127,6 +127,7 @@ def build_app(engine: TradingEngine | None = None) -> FastAPI:
     @app.post("/api/backtest/run")
     def backtest_run(payload: dict | None = None) -> dict:
         body = payload or {}
+        all_symbols = _as_bool(body.get("all_symbols", False))
         raw_symbols = body.get("symbols", bot.config.symbols)
         if isinstance(raw_symbols, str):
             symbols = [item.strip().upper()
@@ -190,9 +191,19 @@ def build_app(engine: TradingEngine | None = None) -> FastAPI:
             profile = bot.profile if profile_name == bot.profile.name else load_strategy_profile(
                 run_config, profile_name)
             if compare:
-                report = compare_profiles(run_config, compare, symbols)
+                report = compare_profiles(
+                    run_config,
+                    compare,
+                    None if all_symbols else symbols,
+                    all_symbols=all_symbols,
+                )
             else:
-                report = run_backtest_suite(run_config, [profile], symbols)
+                report = run_backtest_suite(
+                    run_config,
+                    [profile],
+                    None if all_symbols else symbols,
+                    all_symbols=all_symbols,
+                )
         except (KeyError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001
@@ -202,6 +213,10 @@ def build_app(engine: TradingEngine | None = None) -> FastAPI:
             ) from exc
 
         path = save_backtest_report(report, run_config.data_dir)
+        resolved_symbols = symbols
+        if all_symbols and report.reports:
+            resolved_symbols = [
+                item.symbol for item in report.reports[0].symbol_reports]
         return {
             "ok": True,
             "path": str(path),
@@ -209,7 +224,9 @@ def build_app(engine: TradingEngine | None = None) -> FastAPI:
             "context": {
                 "profile": profile_name,
                 "compare": compare,
-                "symbols": symbols,
+                "symbols": resolved_symbols,
+                "all_symbols": all_symbols,
+                "quote_asset": run_config.quote_asset,
                 "interval": interval,
                 "candles_limit": candles_limit,
                 "leverage": leverage,
@@ -217,3 +234,11 @@ def build_app(engine: TradingEngine | None = None) -> FastAPI:
         }
 
     return app
+
+
+def _as_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}

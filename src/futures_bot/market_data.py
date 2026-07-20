@@ -6,6 +6,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -32,8 +33,35 @@ class BinanceFuturesRESTClient:
         url = f"{self.base_url}{path}" + (f"?{query}" if query else "")
         request = Request(url, data=None if method ==
                           "GET" else b"", method=method, headers=headers)
-        with urlopen(request, timeout=30) as response:
-            return json.loads(response.read().decode())
+        try:
+            with urlopen(request, timeout=30) as response:
+                return json.loads(response.read().decode())
+        except HTTPError as exc:
+            raw_body = ""
+            try:
+                raw_body = exc.read().decode("utf-8", errors="replace")
+            except Exception:  # noqa: BLE001
+                raw_body = ""
+
+            detail = raw_body.strip() or str(exc.reason)
+            try:
+                payload = json.loads(raw_body) if raw_body else {}
+                if isinstance(payload, dict):
+                    code = payload.get("code")
+                    msg = payload.get("msg")
+                    if code is not None and msg:
+                        detail = f"{msg} (code {code})"
+            except json.JSONDecodeError:
+                pass
+
+            if exc.code == 401:
+                detail = (
+                    f"{detail}. Check API key/secret, Futures trading permission, "
+                    "IP whitelist, and testnet/mainnet key alignment."
+                )
+
+            raise RuntimeError(
+                f"Binance API {method} {path} failed ({exc.code}): {detail}") from exc
 
     @staticmethod
     def _encode_params(params: dict[str, Any]) -> str:
@@ -61,6 +89,22 @@ class BinanceFuturesRESTClient:
 
     def futures_create_order(self, **params: Any) -> dict[str, Any]:
         return self._request("POST", "/fapi/v1/order", params, signed=True)
+
+    def futures_get_order(self, symbol: str, order_id: int) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            "/fapi/v1/order",
+            {"symbol": symbol, "orderId": order_id},
+            signed=True,
+        )
+
+    def futures_cancel_order(self, symbol: str, order_id: int) -> dict[str, Any]:
+        return self._request(
+            "DELETE",
+            "/fapi/v1/order",
+            {"symbol": symbol, "orderId": order_id},
+            signed=True,
+        )
 
 
 @dataclass(slots=True)
