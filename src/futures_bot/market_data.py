@@ -90,6 +90,9 @@ class BinanceFuturesRESTClient:
     def futures_create_order(self, **params: Any) -> dict[str, Any]:
         return self._request("POST", "/fapi/v1/order", params, signed=True)
 
+    def futures_place_algo_order(self, **params: Any) -> dict[str, Any]:
+        return self._request("POST", "/fapi/v1/algoOrder", params, signed=True)
+
     def futures_get_order(self, symbol: str, order_id: int) -> dict[str, Any]:
         return self._request(
             "GET",
@@ -103,6 +106,14 @@ class BinanceFuturesRESTClient:
             "DELETE",
             "/fapi/v1/order",
             {"symbol": symbol, "orderId": order_id},
+            signed=True,
+        )
+
+    def futures_cancel_algo_order(self, symbol: str, algo_id: int) -> dict[str, Any]:
+        return self._request(
+            "DELETE",
+            "/fapi/v1/algoOrder",
+            {"symbol": symbol, "algoId": algo_id},
             signed=True,
         )
 

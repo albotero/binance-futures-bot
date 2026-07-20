@@ -27,6 +27,8 @@ Live protection is enforced in code. Real orders require:
 - valid BINANCE_API_KEY and BINANCE_API_SECRET
 - BOT_LIVE_TRADING_CONFIRMED=true, or BINANCE_TESTNET=true
 
+Protective exits in live mode are placed through Binance algo-order endpoints, not the regular futures order endpoint.
+
 ## Features
 
 - Strategy engine with weighted scoring and thresholds
@@ -149,9 +151,15 @@ Core variables:
 - BINANCE_API_SECRET
 - BOT_MODE (paper or live)
 - BOT_SYMBOLS (comma-separated)
+- BOT_ALLOW_SHORT
+- BOT_TRADE_ALL_SYMBOLS
+- BOT_CANDLE_STYLE
 - BOT_STRATEGY_PROFILE
 - BOT_INTERVAL (example: 1m, 5m, 15m, 1h)
 - BOT_CANDLES_LIMIT
+- BOT_INITIAL_EQUITY
+- BOT_QUOTE_ASSET
+- BOT_POLL_SECONDS
 
 Risk and sizing:
 
@@ -161,6 +169,8 @@ Risk and sizing:
 - BOT_MAX_LEVERAGE
 - BOT_MAX_OPEN_POSITIONS
 - BOT_MAX_POSITION_PCT
+- BOT_STOP_LOSS_PCT
+- BOT_TAKE_PROFIT_PCT
 - BOT_MAX_DAILY_LOSS_PCT
 - BOT_MIN_MARGIN_BUFFER_PCT
 - BOT_TRAILING_STOP_PCT

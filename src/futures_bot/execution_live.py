@@ -127,20 +127,24 @@ class BinanceFuturesExecution(BaseExecution):
             round_down=(position.side == Side.SHORT),
         )
 
-        stop_order = self.client.futures_create_order(
+        stop_order = self.client.futures_place_algo_order(
+            algo_type="CONDITIONAL",
             symbol=position.symbol,
             side=close_side,
             type="STOP_MARKET",
-            stopPrice=stop_price,
-            closePosition=True,
+            quantity=self._format_quantity(position.symbol, position.quantity),
+            triggerPrice=stop_price,
+            reduceOnly=True,
             workingType="MARK_PRICE",
         )
-        take_profit_order = self.client.futures_create_order(
+        take_profit_order = self.client.futures_place_algo_order(
+            algo_type="CONDITIONAL",
             symbol=position.symbol,
             side=close_side,
             type="TAKE_PROFIT_MARKET",
-            stopPrice=take_profit_price,
-            closePosition=True,
+            quantity=self._format_quantity(position.symbol, position.quantity),
+            triggerPrice=take_profit_price,
+            reduceOnly=True,
             workingType="MARK_PRICE",
         )
 
@@ -148,13 +152,19 @@ class BinanceFuturesExecution(BaseExecution):
         callback_rate = _trailing_callback_rate(position)
         if callback_rate is not None:
             try:
-                trailing_order = self.client.futures_create_order(
+                trailing_order = self.client.futures_place_algo_order(
+                    algo_type="CONDITIONAL",
                     symbol=position.symbol,
                     side=close_side,
                     type="TRAILING_STOP_MARKET",
-                    callbackRate=callback_rate,
                     quantity=self._format_quantity(
                         position.symbol, position.quantity),
+                    activatePrice=self._format_protective_price(
+                        position.symbol,
+                        position.trailing_stop_price,
+                        round_down=(position.side == Side.LONG),
+                    ),
+                    callbackRate=callback_rate,
                     reduceOnly=True,
                     workingType="MARK_PRICE",
                 )
@@ -202,7 +212,7 @@ class BinanceFuturesExecution(BaseExecution):
         order_ids = self.protective_orders.pop(symbol, [])
         for order_id in order_ids:
             try:
-                self.client.futures_cancel_order(
+                self.client.futures_cancel_algo_order(
                     symbol=symbol, order_id=order_id)
             except Exception:  # noqa: BLE001
                 # Orders may already be filled/canceled at exchange side.
@@ -279,6 +289,8 @@ def _extract_order_id(payload: Any) -> int | None:
     if not isinstance(payload, dict):
         return None
     raw = payload.get("orderId")
+    if raw is None:
+        raw = payload.get("algoId")
     if raw is None:
         return None
     try:

@@ -412,6 +412,7 @@ class LiveExecutionTests(unittest.TestCase):
         class FakeClient:
             def __init__(self) -> None:
                 self.orders: list[dict] = []
+                self.algo_orders: list[dict] = []
                 self.canceled: list[tuple[str, int]] = []
                 self.closed_order_price = 102.5
 
@@ -422,21 +423,26 @@ class LiveExecutionTests(unittest.TestCase):
                 self.orders.append(params)
                 order_type = params.get("type")
                 side = params.get("side")
-                if order_type == "STOP_MARKET":
-                    return {"orderId": 101}
-                if order_type == "TAKE_PROFIT_MARKET":
-                    return {"orderId": 102}
-                if order_type == "TRAILING_STOP_MARKET":
-                    return {"orderId": 103}
                 if order_type == "MARKET" and side == "BUY":
                     return {"orderId": 100, "avgPrice": "100.5"}
                 if order_type == "MARKET" and side == "SELL":
                     return {"orderId": 104, "avgPrice": str(self.closed_order_price)}
                 return {"orderId": 999}
 
-            def futures_cancel_order(self, symbol: str, order_id: int) -> dict:
+            def futures_place_algo_order(self, **params: dict) -> dict:
+                self.algo_orders.append(params)
+                order_type = params.get("type")
+                if order_type == "STOP_MARKET":
+                    return {"algoId": 101}
+                if order_type == "TAKE_PROFIT_MARKET":
+                    return {"algoId": 102}
+                if order_type == "TRAILING_STOP_MARKET":
+                    return {"algoId": 103}
+                return {"algoId": 199}
+
+            def futures_cancel_algo_order(self, symbol: str, order_id: int) -> dict:
                 self.canceled.append((symbol, order_id))
-                return {"symbol": symbol, "orderId": order_id}
+                return {"symbol": symbol, "algoId": order_id}
 
             def futures_get_order(self, symbol: str, order_id: int) -> dict:
                 return {"symbol": symbol, "orderId": order_id, "avgPrice": "0", "executedQty": "0", "cumQuote": "0"}
@@ -464,15 +470,16 @@ class LiveExecutionTests(unittest.TestCase):
         self.assertAlmostEqual(position.take_profit_price, 110.5, places=8)
         self.assertAlmostEqual(position.trailing_stop_price, 96.5, places=8)
         trailing_order = next(
-            item for item in fake_client.orders if item.get("type") == "TRAILING_STOP_MARKET"
+            item for item in fake_client.algo_orders if item.get("type") == "TRAILING_STOP_MARKET"
         )
         self.assertEqual(trailing_order.get("callbackRate"), 3.98)
 
         order_types = [item.get("type") for item in fake_client.orders]
+        algo_types = [item.get("type") for item in fake_client.algo_orders]
         self.assertIn("MARKET", order_types)
-        self.assertIn("STOP_MARKET", order_types)
-        self.assertIn("TAKE_PROFIT_MARKET", order_types)
-        self.assertIn("TRAILING_STOP_MARKET", order_types)
+        self.assertIn("STOP_MARKET", algo_types)
+        self.assertIn("TAKE_PROFIT_MARKET", algo_types)
+        self.assertIn("TRAILING_STOP_MARKET", algo_types)
 
         closed = execution.close_position(
             "BTCUSDT", 102.0, TradeStatus.TAKE_PROFIT.value)
@@ -489,6 +496,7 @@ class LiveExecutionTests(unittest.TestCase):
         class FakeClient:
             def __init__(self) -> None:
                 self.orders: list[dict] = []
+                self.algo_orders: list[dict] = []
                 self.canceled: list[tuple[str, int]] = []
 
             def futures_change_leverage(self, symbol: str, leverage: int) -> dict:
@@ -498,21 +506,26 @@ class LiveExecutionTests(unittest.TestCase):
                 self.orders.append(params)
                 order_type = params.get("type")
                 side = params.get("side")
-                if order_type == "STOP_MARKET":
-                    return {"orderId": 201}
-                if order_type == "TAKE_PROFIT_MARKET":
-                    return {"orderId": 202}
-                if order_type == "TRAILING_STOP_MARKET":
-                    return {"orderId": 203}
                 if order_type == "MARKET" and side == "BUY":
                     return {"orderId": 200, "avgPrice": "100.0"}
                 if order_type == "MARKET" and side == "SELL":
                     raise RuntimeError("close request failed")
                 return {"orderId": 299}
 
-            def futures_cancel_order(self, symbol: str, order_id: int) -> dict:
+            def futures_place_algo_order(self, **params: dict) -> dict:
+                self.algo_orders.append(params)
+                order_type = params.get("type")
+                if order_type == "STOP_MARKET":
+                    return {"algoId": 201}
+                if order_type == "TAKE_PROFIT_MARKET":
+                    return {"algoId": 202}
+                if order_type == "TRAILING_STOP_MARKET":
+                    return {"algoId": 203}
+                return {"algoId": 299}
+
+            def futures_cancel_algo_order(self, symbol: str, order_id: int) -> dict:
                 self.canceled.append((symbol, order_id))
-                return {"symbol": symbol, "orderId": order_id}
+                return {"symbol": symbol, "algoId": order_id}
 
             def futures_get_order(self, symbol: str, order_id: int) -> dict:
                 return {"symbol": symbol, "orderId": order_id, "avgPrice": "0", "executedQty": "0", "cumQuote": "0"}
@@ -551,6 +564,7 @@ class LiveExecutionTests(unittest.TestCase):
         class FakeClient:
             def __init__(self) -> None:
                 self.orders: list[dict] = []
+                self.algo_orders: list[dict] = []
 
             def futures_change_leverage(self, symbol: str, leverage: int) -> dict:
                 return {"symbol": symbol, "leverage": leverage}
@@ -558,16 +572,21 @@ class LiveExecutionTests(unittest.TestCase):
             def futures_create_order(self, **params: dict) -> dict:
                 self.orders.append(params)
                 order_type = params.get("type")
-                if order_type == "STOP_MARKET":
-                    return {"orderId": 301}
-                if order_type == "TAKE_PROFIT_MARKET":
-                    return {"orderId": 302}
-                if order_type == "TRAILING_STOP_MARKET":
-                    return {"orderId": 303}
                 return {"orderId": 300, "avgPrice": "100.0"}
 
-            def futures_cancel_order(self, symbol: str, order_id: int) -> dict:
-                return {"symbol": symbol, "orderId": order_id}
+            def futures_place_algo_order(self, **params: dict) -> dict:
+                self.algo_orders.append(params)
+                order_type = params.get("type")
+                if order_type == "STOP_MARKET":
+                    return {"algoId": 301}
+                if order_type == "TAKE_PROFIT_MARKET":
+                    return {"algoId": 302}
+                if order_type == "TRAILING_STOP_MARKET":
+                    return {"algoId": 303}
+                return {"algoId": 300}
+
+            def futures_cancel_algo_order(self, symbol: str, order_id: int) -> dict:
+                return {"symbol": symbol, "algoId": order_id}
 
             def futures_get_order(self, symbol: str, order_id: int) -> dict:
                 return {"symbol": symbol, "orderId": order_id, "avgPrice": "0", "executedQty": "0", "cumQuote": "0"}
@@ -591,7 +610,7 @@ class LiveExecutionTests(unittest.TestCase):
         )
 
         trailing_order = next(
-            item for item in fake_client.orders if item.get("type") == "TRAILING_STOP_MARKET"
+            item for item in fake_client.algo_orders if item.get("type") == "TRAILING_STOP_MARKET"
         )
         self.assertEqual(trailing_order.get("callbackRate"), 5.0)
 
@@ -601,6 +620,7 @@ class LiveExecutionTests(unittest.TestCase):
         class FakeClient:
             def __init__(self) -> None:
                 self.orders: list[dict] = []
+                self.algo_orders: list[dict] = []
 
             def futures_exchange_info(self) -> dict:
                 return {
@@ -623,18 +643,23 @@ class LiveExecutionTests(unittest.TestCase):
                 self.orders.append(params)
                 order_type = params.get("type")
                 side = params.get("side")
-                if order_type == "STOP_MARKET":
-                    return {"orderId": 401}
-                if order_type == "TAKE_PROFIT_MARKET":
-                    return {"orderId": 402}
-                if order_type == "TRAILING_STOP_MARKET":
-                    return {"orderId": 403}
                 if order_type == "MARKET" and side == "BUY":
                     return {"orderId": 400, "avgPrice": "100.0"}
                 return {"orderId": 499}
 
-            def futures_cancel_order(self, symbol: str, order_id: int) -> dict:
-                return {"symbol": symbol, "orderId": order_id}
+            def futures_place_algo_order(self, **params: dict) -> dict:
+                self.algo_orders.append(params)
+                order_type = params.get("type")
+                if order_type == "STOP_MARKET":
+                    return {"algoId": 401}
+                if order_type == "TAKE_PROFIT_MARKET":
+                    return {"algoId": 402}
+                if order_type == "TRAILING_STOP_MARKET":
+                    return {"algoId": 403}
+                return {"algoId": 499}
+
+            def futures_cancel_algo_order(self, symbol: str, order_id: int) -> dict:
+                return {"symbol": symbol, "algoId": order_id}
 
             def futures_get_order(self, symbol: str, order_id: int) -> dict:
                 return {"symbol": symbol, "orderId": order_id, "avgPrice": "0", "executedQty": "0", "cumQuote": "0"}
@@ -661,15 +686,15 @@ class LiveExecutionTests(unittest.TestCase):
             item for item in fake_client.orders if item.get("type") == "MARKET" and item.get("side") == "BUY"
         )
         stop_order = next(
-            item for item in fake_client.orders if item.get("type") == "STOP_MARKET"
+            item for item in fake_client.algo_orders if item.get("type") == "STOP_MARKET"
         )
         take_profit_order = next(
-            item for item in fake_client.orders if item.get("type") == "TAKE_PROFIT_MARKET"
+            item for item in fake_client.algo_orders if item.get("type") == "TAKE_PROFIT_MARKET"
         )
 
         self.assertEqual(entry_order.get("quantity"), 0.012)
-        self.assertEqual(stop_order.get("stopPrice"), 95.5)
-        self.assertEqual(take_profit_order.get("stopPrice"), 110.6)
+        self.assertEqual(stop_order.get("triggerPrice"), 95.5)
+        self.assertEqual(take_profit_order.get("triggerPrice"), 110.6)
 
     def test_quantity_fallback_rounds_down_when_filters_unavailable(self) -> None:
         execution = BinanceFuturesExecution(initial_equity=1000.0)
@@ -677,6 +702,7 @@ class LiveExecutionTests(unittest.TestCase):
         class FakeClient:
             def __init__(self) -> None:
                 self.orders: list[dict] = []
+                self.algo_orders: list[dict] = []
 
             def futures_exchange_info(self) -> dict:
                 raise RuntimeError("exchange info unavailable")
@@ -688,18 +714,23 @@ class LiveExecutionTests(unittest.TestCase):
                 self.orders.append(params)
                 order_type = params.get("type")
                 side = params.get("side")
-                if order_type == "STOP_MARKET":
-                    return {"orderId": 501}
-                if order_type == "TAKE_PROFIT_MARKET":
-                    return {"orderId": 502}
-                if order_type == "TRAILING_STOP_MARKET":
-                    return {"orderId": 503}
                 if order_type == "MARKET" and side == "BUY":
                     return {"orderId": 500, "avgPrice": "100.0"}
                 return {"orderId": 599}
 
-            def futures_cancel_order(self, symbol: str, order_id: int) -> dict:
-                return {"symbol": symbol, "orderId": order_id}
+            def futures_place_algo_order(self, **params: dict) -> dict:
+                self.algo_orders.append(params)
+                order_type = params.get("type")
+                if order_type == "STOP_MARKET":
+                    return {"algoId": 501}
+                if order_type == "TAKE_PROFIT_MARKET":
+                    return {"algoId": 502}
+                if order_type == "TRAILING_STOP_MARKET":
+                    return {"algoId": 503}
+                return {"algoId": 599}
+
+            def futures_cancel_algo_order(self, symbol: str, order_id: int) -> dict:
+                return {"symbol": symbol, "algoId": order_id}
 
             def futures_get_order(self, symbol: str, order_id: int) -> dict:
                 return {"symbol": symbol, "orderId": order_id, "avgPrice": "0", "executedQty": "0", "cumQuote": "0"}
