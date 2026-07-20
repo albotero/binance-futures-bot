@@ -68,6 +68,7 @@ class TradingEngine:
                 api_key=config.api_key,
                 api_secret=config.api_secret,
                 base_url=config.binance_base_url,
+                live_protection_mode=config.live_protection_mode,
             )
         return PaperExecution(
             initial_equity=config.initial_equity,

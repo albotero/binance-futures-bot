@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .config import default_strategy_profile, resolve_path
@@ -135,8 +136,12 @@ def run_backtest(
 
     for symbol in symbols:
         try:
-            candles = market_data.fetch_candles(
-                symbol, config.interval, config.candles_limit)
+            candles = fetch_backtest_candles(
+                market_data,
+                symbol,
+                config.interval,
+                config.backtest_duration,
+            )
             if not candles:
                 raise ValueError("No candles returned")
             result = _run_symbol_backtest(
@@ -198,6 +203,105 @@ def compare_profiles(
     profiles = [_single_strategy_profile(
         name, config.candle_style) for name in profile_names]
     return run_backtest_suite(config, profiles, symbols, all_symbols=all_symbols)
+
+
+def parse_backtest_duration(value: str) -> timedelta:
+    raw = value.strip().lower()
+    if not raw:
+        raise ValueError("backtest duration is required")
+
+    matches = list(re.finditer(r"(\d+)\s*(mo|y|w|d|h)", raw))
+    consumed = "".join(match.group(0) for match in matches)
+    normalized = re.sub(r"[\s,]+", "", raw)
+    if not matches or consumed.replace(" ", "") != normalized:
+        raise ValueError(
+            "backtest duration must use formats like 4w, 6mo, 1y, or 1y6mo"
+        )
+
+    total = timedelta()
+    for match in matches:
+        amount = int(match.group(1))
+        unit = match.group(2)
+        if amount <= 0:
+            raise ValueError("backtest duration must be positive")
+        if unit == "h":
+            total += timedelta(hours=amount)
+        elif unit == "d":
+            total += timedelta(days=amount)
+        elif unit == "w":
+            total += timedelta(weeks=amount)
+        elif unit == "mo":
+            total += timedelta(days=30 * amount)
+        elif unit == "y":
+            total += timedelta(days=365 * amount)
+
+    if total <= timedelta(0):
+        raise ValueError("backtest duration must be positive")
+    return total
+
+
+def fetch_backtest_candles(
+    market_data: BinanceMarketData,
+    symbol: str,
+    interval: str,
+    duration: str,
+) -> list[dict[str, float]]:
+    interval_ms = _interval_to_milliseconds(interval)
+    duration_delta = parse_backtest_duration(duration)
+    end_time = datetime.now(timezone.utc)
+    start_time = end_time - duration_delta
+    start_ms = int(start_time.timestamp() * 1000)
+    end_ms = int(end_time.timestamp() * 1000)
+
+    candles: list[dict[str, float]] = []
+    cursor = start_ms
+    max_limit = 1500
+    max_pages = 2000
+
+    for _ in range(max_pages):
+        batch = market_data.fetch_candles(
+            symbol,
+            interval,
+            limit=max_limit,
+            start_time=cursor,
+            end_time=end_ms,
+        )
+        if not batch:
+            break
+
+        new_rows = [
+            item for item in batch
+            if not candles or item.get("open_time", 0.0) > candles[-1].get("open_time", 0.0)
+        ]
+        if not new_rows:
+            break
+
+        candles.extend(new_rows)
+        last_open_time = int(new_rows[-1]["open_time"])
+        cursor = last_open_time + interval_ms
+        if cursor > end_ms or len(batch) < max_limit:
+            break
+
+    return candles
+
+
+def _interval_to_milliseconds(interval: str) -> int:
+    unit = interval[-1]
+    try:
+        amount = int(interval[:-1])
+    except ValueError as exc:
+        raise ValueError(f"unsupported interval {interval}") from exc
+
+    multipliers = {
+        "m": 60_000,
+        "h": 3_600_000,
+        "d": 86_400_000,
+        "w": 604_800_000,
+        "M": 2_592_000_000,
+    }
+    if unit not in multipliers or amount <= 0:
+        raise ValueError(f"unsupported interval {interval}")
+    return amount * multipliers[unit]
 
 
 def _single_strategy_profile(strategy_name: str, candle_style: str) -> StrategyProfile:

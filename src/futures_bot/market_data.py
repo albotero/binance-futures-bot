@@ -78,8 +78,25 @@ class BinanceFuturesRESTClient:
     def futures_exchange_info(self) -> dict[str, Any]:
         return self._request("GET", "/fapi/v1/exchangeInfo")
 
-    def futures_klines(self, symbol: str, interval: str, limit: int = 200) -> list[list[Any]]:
-        return self._request("GET", "/fapi/v1/klines", {"symbol": symbol, "interval": interval, "limit": limit})
+    def futures_klines(
+        self,
+        symbol: str,
+        interval: str,
+        limit: int = 200,
+        start_time: int | None = None,
+        end_time: int | None = None,
+    ) -> list[list[Any]]:
+        return self._request(
+            "GET",
+            "/fapi/v1/klines",
+            {
+                "symbol": symbol,
+                "interval": interval,
+                "limit": limit,
+                "startTime": start_time,
+                "endTime": end_time,
+            },
+        )
 
     def futures_symbol_ticker(self, symbol: str) -> dict[str, Any]:
         return self._request("GET", "/fapi/v1/ticker/price", {"symbol": symbol})
@@ -140,9 +157,21 @@ class BinanceMarketData:
             symbols.append(item["symbol"])
         return sorted(set(symbols))
 
-    def fetch_candles(self, symbol: str, interval: str, limit: int = 200) -> list[dict[str, float]]:
+    def fetch_candles(
+        self,
+        symbol: str,
+        interval: str,
+        limit: int = 200,
+        start_time: int | None = None,
+        end_time: int | None = None,
+    ) -> list[dict[str, float]]:
         rows = self.client.futures_klines(
-            symbol=symbol, interval=interval, limit=limit)
+            symbol=symbol,
+            interval=interval,
+            limit=limit,
+            start_time=start_time,
+            end_time=end_time,
+        )
         candles: list[dict[str, float]] = []
         for row in rows:
             candles.append(

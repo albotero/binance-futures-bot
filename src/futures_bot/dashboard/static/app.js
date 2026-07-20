@@ -333,8 +333,9 @@ function renderBacktestControls() {
   const activeProfile = state.latestStrategies?.active?.name || "default"
   const symbols = state.latestStatus?.config?.symbols || []
   const interval = state.latestStatus?.config?.interval || "5m"
-  const candlesLimit = Number(state.latestStatus?.config?.candles_limit || 200)
+  const duration = state.latestStatus?.config?.backtest_duration || "12w"
   const leverage = Number(state.latestStatus?.config?.leverage || 3)
+  const quoteAsset = state.latestStatus?.config?.quote_asset || "USDT"
 
   if (!state.backtestForm) {
     state.backtestForm = {
@@ -343,7 +344,7 @@ function renderBacktestControls() {
       symbolsText: symbols.join(","),
       allSymbols: false,
       interval,
-      candlesLimit,
+      duration,
       leverage,
     }
   }
@@ -366,18 +367,27 @@ function renderBacktestControls() {
       <label>
         Symbols (comma-separated)
         <input id="backtestSymbols" type="text" value="${state.backtestForm.symbolsText}" placeholder="BTCUSDT,ETHUSDT" ${state.backtestLoading || state.backtestForm.allSymbols ? "disabled" : ""} />
+        <span class="field-hint">Used only when all quote symbols is turned off.</span>
       </label>
-      <label>
-        All symbols for quote asset
-        <input id="backtestAllSymbols" type="checkbox" ${state.backtestForm.allSymbols ? "checked" : ""} ${state.backtestLoading ? "disabled" : ""} />
+      <label class="toggle-card ${state.backtestForm.allSymbols ? "is-active" : ""} ${state.backtestLoading ? "is-disabled" : ""}">
+        <span class="toggle-copy">
+          <span class="toggle-title">All ${quoteAsset} symbols</span>
+          <span class="field-hint">Scan the full exchange symbol list for the selected quote asset instead of the manual symbols field.</span>
+        </span>
+        <span class="toggle-switch">
+          <input id="backtestAllSymbols" type="checkbox" ${state.backtestForm.allSymbols ? "checked" : ""} ${state.backtestLoading ? "disabled" : ""} />
+          <span class="toggle-slider" aria-hidden="true"></span>
+        </span>
       </label>
       <label>
         Interval
         <input id="backtestInterval" type="text" value="${state.backtestForm.interval}" placeholder="5m,15m,1h,4h" ${state.backtestLoading ? "disabled" : ""} />
+        <span class="field-hint">Smaller intervals over long durations will take longer because the backtest fetch paginates exchange candles.</span>
       </label>
       <label>
-        Candles limit
-        <input id="backtestCandlesLimit" type="number" min="30" max="1500" value="${state.backtestForm.candlesLimit}" ${state.backtestLoading ? "disabled" : ""} />
+        Duration
+        <input id="backtestDuration" type="text" value="${state.backtestForm.duration}" placeholder="12w, 6mo, 1y" ${state.backtestLoading ? "disabled" : ""} />
+        <span class="field-hint">Examples: 3w, 6mo, 1y, 1y6mo.</span>
       </label>
       <label>
         Leverage
@@ -404,7 +414,7 @@ function captureBacktestFormFromDom() {
     symbolsText: document.getElementById("backtestSymbols")?.value || "",
     allSymbols: Boolean(document.getElementById("backtestAllSymbols")?.checked),
     interval: document.getElementById("backtestInterval")?.value?.trim() || "5m",
-    candlesLimit: Number(document.getElementById("backtestCandlesLimit")?.value || 200),
+    duration: document.getElementById("backtestDuration")?.value?.trim() || "12w",
     leverage: Number(document.getElementById("backtestLeverage")?.value || 3),
   }
 }
@@ -490,12 +500,12 @@ function renderBacktestResult() {
 
   root.innerHTML = `
     <div class="pill"><strong>${runMode}</strong></div>
-    <div class="pill">Window: ${context.interval || "n/a"} × ${context.candles_limit || "n/a"} candles</div>
+    <div class="pill">Window: ${context.interval || "n/a"} for ${context.duration || "n/a"}</div>
     <div class="pill">Leverage: ${context.leverage || "n/a"}x</div>
     <div class="pill">Symbols: ${symbolsLine}</div>
     <div class="pill">Report: ${data.path || "n/a"}</div>
     <div class="metrics stack-metrics">${cards}</div>
-    <div class="muted">How to read this: Net PnL is total simulated profit/loss. Win rate is percent of profitable trades. Max drawdown is the worst peak-to-trough equity decline.</div>
+    <div class="muted">How to read this: Net PnL is total simulated profit/loss over the selected time window. Win rate is percent of profitable trades. Max drawdown is the worst peak-to-trough equity decline.</div>
     ${details}
   `
 }
@@ -608,7 +618,7 @@ async function runBacktestFromDashboard() {
   const symbolsText = state.backtestForm.symbolsText || ""
   const allSymbols = Boolean(state.backtestForm.allSymbols)
   const interval = state.backtestForm.interval || "5m"
-  const candlesLimit = Number(state.backtestForm.candlesLimit || 200)
+  const duration = state.backtestForm.duration || "12w"
   const leverage = Number(state.backtestForm.leverage || 3)
 
   state.backtestLoading = true
@@ -630,7 +640,7 @@ async function runBacktestFromDashboard() {
     symbols,
     all_symbols: allSymbols,
     interval,
-    candles_limit: candlesLimit,
+    duration,
     leverage,
   }
   if (compare.length) {
@@ -724,7 +734,7 @@ document.addEventListener("input", (event) => {
     target.id === "backtestSymbols" ||
     target.id === "backtestAllSymbols" ||
     target.id === "backtestInterval" ||
-    target.id === "backtestCandlesLimit" ||
+    target.id === "backtestDuration" ||
     target.id === "backtestLeverage"
   ) {
     captureBacktestFormFromDom()

@@ -18,6 +18,7 @@ class BinanceFuturesExecution(BaseExecution):
     api_key: str = ""
     api_secret: str = ""
     base_url: str = "https://fapi.binance.com"
+    live_protection_mode: str = "local_and_exchange"
     client: BinanceFuturesRESTClient = field(init=False)
     protective_orders: dict[str, list[int]] = field(
         default_factory=dict, init=False)
@@ -54,13 +55,16 @@ class BinanceFuturesExecution(BaseExecution):
             requested_entry=requested_entry,
             fill_price=fill_price,
         )
-        try:
-            self.protective_orders[position.symbol] = self._place_protective_orders(
-                position)
-        except Exception as exc:  # noqa: BLE001
-            self._emergency_flatten(position)
-            raise RuntimeError(
-                f"Failed to place protective TP/SL orders for {position.symbol}: {exc}") from exc
+        if self._uses_exchange_protection():
+            try:
+                self.protective_orders[position.symbol] = self._place_protective_orders(
+                    position)
+            except Exception as exc:  # noqa: BLE001
+                self._emergency_flatten(position)
+                raise RuntimeError(
+                    f"Failed to place protective TP/SL orders for {position.symbol}: {exc}") from exc
+        else:
+            self.protective_orders[position.symbol] = []
         self.positions[position.symbol] = position
         return position
 
@@ -128,7 +132,7 @@ class BinanceFuturesExecution(BaseExecution):
         )
 
         stop_order = self.client.futures_place_algo_order(
-            algo_type="CONDITIONAL",
+            algoType="CONDITIONAL",
             symbol=position.symbol,
             side=close_side,
             type="STOP_MARKET",
@@ -138,7 +142,7 @@ class BinanceFuturesExecution(BaseExecution):
             workingType="MARK_PRICE",
         )
         take_profit_order = self.client.futures_place_algo_order(
-            algo_type="CONDITIONAL",
+            algoType="CONDITIONAL",
             symbol=position.symbol,
             side=close_side,
             type="TAKE_PROFIT_MARKET",
@@ -153,7 +157,7 @@ class BinanceFuturesExecution(BaseExecution):
         if callback_rate is not None:
             try:
                 trailing_order = self.client.futures_place_algo_order(
-                    algo_type="CONDITIONAL",
+                    algoType="CONDITIONAL",
                     symbol=position.symbol,
                     side=close_side,
                     type="TRAILING_STOP_MARKET",
@@ -255,6 +259,9 @@ class BinanceFuturesExecution(BaseExecution):
                 return quantized
         # Fallback should never round up; keep quantity conservative.
         return _quantize_to_step(quantity, 0.00001, mode="down")
+
+    def _uses_exchange_protection(self) -> bool:
+        return self.live_protection_mode.strip().lower() == "local_and_exchange"
 
     def _get_symbol_filters(self, symbol: str) -> tuple[float | None, float | None]:
         cached = self.symbol_filters.get(symbol)

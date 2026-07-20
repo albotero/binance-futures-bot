@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from .backtest import compare_profiles, run_backtest_suite, save_backtest_report
+from .backtest import compare_profiles, parse_backtest_duration, run_backtest_suite, save_backtest_report
 from .config import default_strategy_profile, load_bot_config, load_strategy_profile
 from .engine import TradingEngine
 from .models import BotConfig, StrategyProfile
@@ -150,15 +150,9 @@ def build_app(engine: TradingEngine | None = None) -> FastAPI:
 
         interval = str(body.get("interval", bot.config.interval)
                        ).strip() or bot.config.interval
-        raw_candles_limit = body.get("candles_limit", bot.config.candles_limit)
+        raw_duration = str(
+            body.get("duration", bot.config.backtest_duration)).strip()
         raw_leverage = body.get("leverage", bot.config.leverage)
-        try:
-            candles_limit = int(raw_candles_limit)
-        except (TypeError, ValueError) as exc:
-            raise HTTPException(
-                status_code=400,
-                detail="candles_limit must be an integer",
-            ) from exc
         try:
             leverage = int(raw_leverage)
         except (TypeError, ValueError) as exc:
@@ -166,11 +160,10 @@ def build_app(engine: TradingEngine | None = None) -> FastAPI:
                 status_code=400,
                 detail="leverage must be an integer",
             ) from exc
-        if candles_limit < 30 or candles_limit > 1500:
-            raise HTTPException(
-                status_code=400,
-                detail="candles_limit must be between 30 and 1500",
-            )
+        try:
+            parse_backtest_duration(raw_duration)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         if leverage < 1 or leverage > 125:
             raise HTTPException(
                 status_code=400,
@@ -181,7 +174,7 @@ def build_app(engine: TradingEngine | None = None) -> FastAPI:
             {
                 **bot.config.to_dict(),
                 "interval": interval,
-                "candles_limit": candles_limit,
+                "backtest_duration": raw_duration,
                 "leverage": leverage,
                 "max_leverage": leverage,
             }
@@ -228,7 +221,7 @@ def build_app(engine: TradingEngine | None = None) -> FastAPI:
                 "all_symbols": all_symbols,
                 "quote_asset": run_config.quote_asset,
                 "interval": interval,
-                "candles_limit": candles_limit,
+                "duration": raw_duration,
                 "leverage": leverage,
             },
         }

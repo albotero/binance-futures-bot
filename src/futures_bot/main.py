@@ -34,6 +34,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Backtest all available symbols for BOT_QUOTE_ASSET",
     )
+    backtest_parser.add_argument(
+        "--duration",
+        default=None,
+        help="Backtest duration such as 4w, 6mo, 1y, or 1y6mo",
+    )
 
     return parser
 
@@ -50,6 +55,8 @@ def main() -> None:
         return
 
     if args.command == "backtest":
+        if args.duration:
+            config.backtest_duration = args.duration
         selected_symbols = [symbol.upper()
                             for symbol in (args.symbols or config.symbols)]
         if args.compare:

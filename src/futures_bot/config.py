@@ -37,6 +37,10 @@ def load_bot_config() -> BotConfig:
     config.trade_all_symbols = _read_bool(
         "BOT_TRADE_ALL_SYMBOLS", config.trade_all_symbols)
     config.allow_short = _read_bool("BOT_ALLOW_SHORT", config.allow_short)
+    config.live_protection_mode = os.getenv(
+        "BOT_LIVE_PROTECTION_MODE", config.live_protection_mode).strip().lower() or config.live_protection_mode
+    config.backtest_duration = os.getenv(
+        "BOT_BACKTEST_DURATION", config.backtest_duration).strip() or config.backtest_duration
     config.candle_style = os.getenv("BOT_CANDLE_STYLE", config.candle_style)
     config.interval = os.getenv("BOT_INTERVAL", config.interval)
     config.candles_limit = _read_int("BOT_CANDLES_LIMIT", config.candles_limit)

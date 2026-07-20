@@ -72,6 +72,8 @@ class BotConfig:
     symbols: list[str] = field(default_factory=lambda: ["BTCUSDT", "ETHUSDT"])
     trade_all_symbols: bool = False
     allow_short: bool = True
+    live_protection_mode: str = "local_and_exchange"
+    backtest_duration: str = "12w"
     candle_style: str = "raw"
     interval: str = "5m"
     candles_limit: int = 200
