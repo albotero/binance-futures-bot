@@ -78,6 +78,7 @@ class BotConfig:
     leverage: int = 3
     max_leverage: int = 3
     risk_per_trade_pct: float = 1.0
+    risk_reward_ratio: float = 2.0
     max_open_positions: int = 5
     max_position_pct: float = 25.0
     stop_loss_pct: float = 1.5
@@ -128,6 +129,16 @@ class Signal:
         if self.score < 0:
             return Side.SHORT
         return None
+
+
+@dataclass(slots=True)
+class ExitPlan:
+    stop_loss_price: float
+    take_profit_price: float
+    trailing_stop_price: float
+    support_price: float = 0.0
+    resistance_price: float = 0.0
+    rationale: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)

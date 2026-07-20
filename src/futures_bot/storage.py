@@ -100,6 +100,20 @@ class SQLiteStore:
                 "SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         return [dict(row) for row in rows]
 
+    def list_snapshots(self, limit: int = 500) -> list[dict[str, Any]]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                "SELECT created_at, payload FROM snapshots ORDER BY id DESC LIMIT ?", (
+                    limit,)
+            ).fetchall()
+        snapshots: list[dict[str, Any]] = []
+        for row in reversed(rows):
+            payload = json.loads(row["payload"])
+            if "created_at" not in payload:
+                payload["created_at"] = row["created_at"]
+            snapshots.append(payload)
+        return snapshots
+
     def store_snapshot(self, payload: dict[str, Any]) -> None:
         with self.connection() as conn:
             conn.execute(

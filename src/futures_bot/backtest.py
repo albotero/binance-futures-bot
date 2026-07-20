@@ -183,7 +183,8 @@ def _run_symbol_backtest(
         window = candles[: index + 1]
         current_price = float(window[-1]["close"])
         execution.mark_price(symbol, current_price)
-        evaluation = evaluate_profile(profile, window, symbol)
+        evaluation = evaluate_profile(
+            profile, window, symbol, config.risk_reward_ratio)
         _sync_symbol_position(config, execution, profile,
                               symbol, current_price, evaluation, trades)
         equity = execution.snapshot().equity
@@ -241,11 +242,11 @@ def _sync_symbol_position(
                 trades.append(_trade_from_position(
                     closed, TradeStatus.REVERSED.value))
             _open_backtest_position(
-                config, execution, profile, symbol, current_price, evaluation.action)
+                config, execution, profile, symbol, current_price, evaluation.action, evaluation)
         return
 
     _open_backtest_position(config, execution, profile,
-                            symbol, current_price, evaluation.action)
+                            symbol, current_price, evaluation.action, evaluation)
 
 
 def _open_backtest_position(
@@ -255,6 +256,7 @@ def _open_backtest_position(
     symbol: str,
     current_price: float,
     action: str,
+    evaluation: StrategyEvaluation | None = None,
 ) -> None:
     if action == "hold":
         return
@@ -265,28 +267,33 @@ def _open_backtest_position(
 
     equity = max(execution.snapshot().equity, 1.0)
     risk_amount = equity * (config.risk_per_trade_pct / 100)
-    stop_distance = current_price * (config.stop_loss_pct / 100)
+    exit_plan = evaluation.exit_plan if evaluation else None
+    stop_distance = abs(
+        current_price - exit_plan.stop_loss_price) if exit_plan else current_price * (config.stop_loss_pct / 100)
     if stop_distance <= 0:
         return
     quantity = max(risk_amount / stop_distance, 0.0)
     notional = quantity * current_price
-    max_notional = equity * (config.max_position_pct / 100)
+    leverage = min(config.leverage, config.max_leverage)
+    max_notional = equity * (config.max_position_pct / 100) * leverage
     if max_notional > 0:
         quantity = min(quantity, max_notional / max(current_price, 1e-9))
     if quantity <= 0:
         return
 
     side = Side.LONG if action == "long" else Side.SHORT
-    leverage = min(config.leverage, config.max_leverage)
-    stop_loss_price = current_price * \
-        (1 - config.stop_loss_pct / 100) if side == Side.LONG else current_price * \
-        (1 + config.stop_loss_pct / 100)
-    take_profit_price = current_price * \
-        (1 + config.take_profit_pct / 100) if side == Side.LONG else current_price * \
-        (1 - config.take_profit_pct / 100)
-    trailing_stop_price = current_price * \
-        (1 - config.trailing_stop_pct / 100) if side == Side.LONG else current_price * \
-        (1 + config.trailing_stop_pct / 100)
+    stop_loss_price = exit_plan.stop_loss_price if exit_plan else (
+        current_price * (1 - config.stop_loss_pct /
+                         100) if side == Side.LONG else current_price * (1 + config.stop_loss_pct / 100)
+    )
+    take_profit_price = exit_plan.take_profit_price if exit_plan else (
+        current_price + stop_distance * config.risk_reward_ratio if side == Side.LONG else current_price -
+        stop_distance * config.risk_reward_ratio
+    )
+    trailing_stop_price = exit_plan.trailing_stop_price if exit_plan else (
+        current_price * (1 - config.trailing_stop_pct /
+                         100) if side == Side.LONG else current_price * (1 + config.trailing_stop_pct / 100)
+    )
     position = Position(
         symbol=symbol,
         side=side,

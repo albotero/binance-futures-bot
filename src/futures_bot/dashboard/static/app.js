@@ -3,11 +3,14 @@ const state = {
   history: [],
   latestStatus: null,
   latestStrategies: null,
+  latestExchange: null,
   backtestResult: null,
   backtestError: "",
   backtestLoading: false,
   backtestForm: null,
 }
+
+const DISPLAY_TIME_ZONE = "America/Bogota"
 
 const formatMoney = (value) =>
   new Intl.NumberFormat(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(
@@ -101,13 +104,123 @@ function renderBotState(payload) {
   const root = document.getElementById("botState")
   const state = payload.state || {}
   const profile = payload.profile || {}
+  const lastCycle = state.last_run_at
+    ? `<div class="pill">Last engine cycle: ${formatUtcHuman(state.last_run_at)}</div>`
+    : ""
   root.innerHTML = `
-    <div class="pill">${state.running ? "Running" : "Stopped"} ${state.paused ? "· Paused" : ""}</div>
     <div class="pill">Profile: ${profile.name || "n/a"}</div>
-    <div class="pill">Mode: ${payload.config?.mode || "paper"}</div>
-    <div class="pill">Last run: ${state.last_run_at || "never"}</div>
+    <div class="pill">Started: ${formatUtcHuman(state.started_at)}</div>
+    ${lastCycle}
     <div class="pill">Symbols: ${(state.active_symbols || []).join(", ") || "n/a"}</div>
     <div class="pill">Last error: ${state.last_error || "none"}</div>
+  `
+}
+
+function renderExchangeOverview(data) {
+  const root = document.getElementById("exchangeOverview")
+  if (!data) {
+    root.innerHTML = '<p class="muted">No exchange data loaded.</p>'
+    return
+  }
+  const prices = Object.entries(data.latest_prices || {})
+    .map(
+      ([symbol, price]) => `<div class="pill">${symbol}: ${price == null ? "unavailable" : formatMoney(price)}</div>`,
+    )
+    .join("")
+
+  root.innerHTML = `
+    <div class="pill">Mode: ${data.mode || "n/a"}</div>
+    <div class="pill">Environment: ${data.testnet ? "Testnet" : "Live / Mainnet"}</div>
+    <div class="pill">Quote asset: ${data.quote_asset || "n/a"}</div>
+    <div class="pill">Interval: ${data.interval || "n/a"}</div>
+    <div class="pill">Candle style: ${data.candle_style || "n/a"}</div>
+    <div class="pill">Leverage: ${data.leverage || "n/a"}x / Max ${data.max_leverage || "n/a"}x</div>
+    <div class="pill">Endpoint: ${data.base_url || "n/a"}</div>
+    <div class="stack inline-pills">${prices || '<p class="muted">No prices available.</p>'}</div>
+  `
+}
+
+function formatUtcHuman(value) {
+  if (!value) {
+    return "never"
+  }
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return value
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZone: DISPLAY_TIME_ZONE,
+    timeZoneName: "short",
+  }).format(date)
+}
+
+function formatRuntime(startedAt) {
+  if (!startedAt) {
+    return "Stopped"
+  }
+  const date = new Date(startedAt)
+  if (Number.isNaN(date.getTime())) {
+    return "Stopped"
+  }
+  const totalSeconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000))
+  const hours = String(Math.floor(totalSeconds / 3600)).padStart(2, "0")
+  const minutes = String(Math.floor((totalSeconds % 3600) / 60)).padStart(2, "0")
+  const seconds = String(totalSeconds % 60).padStart(2, "0")
+  return `Running ${hours}:${minutes}:${seconds}`
+}
+
+function renderHeroControls() {
+  const botState = state.latestStatus?.state || {}
+  const running = Boolean(botState.running)
+  const paused = Boolean(botState.paused)
+  const startButton = document.getElementById("startButton")
+  const stopButton = document.getElementById("stopButton")
+  const pauseButton = document.getElementById("pauseButton")
+  const runOnceButton = document.getElementById("runOnceButton")
+  const runtimeTimer = document.getElementById("runtimeTimer")
+
+  if (startButton) {
+    startButton.disabled = running
+  }
+  if (stopButton) {
+    stopButton.disabled = !running
+  }
+  if (pauseButton) {
+    pauseButton.disabled = !running
+    pauseButton.dataset.action = paused ? "resume" : "pause"
+    pauseButton.textContent = paused ? "Resume" : "Pause"
+  }
+  if (runOnceButton) {
+    runOnceButton.disabled = running
+  }
+  if (runtimeTimer) {
+    runtimeTimer.textContent = running ? formatRuntime(botState.started_at) : "Stopped"
+  }
+}
+
+function renderHistorySummary() {
+  const root = document.getElementById("historySummary")
+  if (!root) {
+    return
+  }
+  if (!state.history.length) {
+    root.innerHTML = '<p class="muted">No stored snapshot history found.</p>'
+    return
+  }
+  const first = state.history[0]
+  const last = state.history[state.history.length - 1]
+  root.innerHTML = `
+    <div class="pill">Loaded snapshots: ${state.history.length}</div>
+    <div class="pill">From: ${first.rawLabel ? formatUtcHuman(first.rawLabel) : first.label}</div>
+    <div class="pill">To: ${last.rawLabel ? formatUtcHuman(last.rawLabel) : last.label}</div>
+    <div class="pill">Timezone: UTC-5</div>
   `
 }
 
@@ -166,7 +279,7 @@ function renderTrades(trades) {
             .map(
               (trade) => `
             <tr>
-              <td>${trade.closed_at || trade.opened_at || "-"}</td>
+              <td>${formatUtcHuman(trade.closed_at || trade.opened_at)}</td>
               <td>${trade.symbol}</td>
               <td>${trade.side}</td>
               <td>${trade.status}</td>
@@ -391,12 +504,7 @@ function renderSignals(payload) {
 
 function updateChart(metrics) {
   const ctx = document.getElementById("performanceChart")
-  state.history.push({
-    equity: Number(metrics.equity || 0),
-    pnl: Number(metrics.realized_pnl || 0) + Number(metrics.unrealized_pnl || 0),
-  })
-  state.history = state.history.slice(-30)
-  const labels = state.history.map((_, index) => index + 1)
+  const labels = state.history.map((point) => point.label)
   const equitySeries = state.history.map((point) => point.equity)
   const pnlSeries = state.history.map((point) => point.pnl)
 
@@ -427,14 +535,45 @@ function updateChart(metrics) {
   state.chart.update()
 }
 
+function updateHistoryFromSnapshots(snapshots, currentMetrics) {
+  const rows = (snapshots || []).map((snapshot, index) => {
+    const metrics = snapshot.metrics || {}
+    const label = snapshot.created_at || String(index + 1)
+    return {
+      label: formatUtcHuman(label),
+      rawLabel: label,
+      equity: Number(metrics.equity || 0),
+      pnl: Number(metrics.realized_pnl || 0) + Number(metrics.unrealized_pnl || 0),
+    }
+  })
+
+  if (!rows.length && currentMetrics) {
+    rows.push({
+      label: "Current",
+      rawLabel: "",
+      equity: Number(currentMetrics.equity || 0),
+      pnl: Number(currentMetrics.realized_pnl || 0) + Number(currentMetrics.unrealized_pnl || 0),
+    })
+  }
+
+  state.history = rows
+}
+
 async function refresh() {
   const payload = await request("/api/status")
   const trades = await request("/api/trades")
   const strategies = await request("/api/strategies")
+  const history = await request("/api/history?limit=2000")
+  const exchange = await request("/api/exchange")
   state.latestStatus = payload
   state.latestStrategies = strategies
+  state.latestExchange = exchange
+  updateHistoryFromSnapshots(history.snapshots || [], payload.metrics || {})
   renderMetrics(payload.metrics || {})
+  renderHeroControls()
+  renderHistorySummary()
   renderBotState(payload)
+  renderExchangeOverview(exchange)
   renderPositions(payload.positions || [])
   renderTrades(trades.trades || [])
   renderStrategies(strategies)
@@ -592,4 +731,5 @@ refresh().catch((error) => {
     `<div style="position:fixed;top:12px;left:12px;padding:12px 16px;background:#7f1d1d;color:#fff;border-radius:12px;z-index:1000;">${error.message}</div>`,
   )
 })
+setInterval(() => renderHeroControls(), 1000)
 setInterval(() => refresh().catch(console.error), 15000)

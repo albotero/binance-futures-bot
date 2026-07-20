@@ -1,129 +1,384 @@
 # Futures Bot
 
-A Python Binance futures trading bot with:
+Binance futures trading bot with:
 
-- Binance API connection via environment variables
-- Paper trading by default, live trading when explicitly enabled
-- Built-in technical analysis strategies
-- Symbol filtering for selected pairs or the full USDT futures universe
-- Long-only or long/short operation
-- Local web dashboard for monitoring and manual trade control
-- Strategy profiles saved to disk for reuse and sharing
-- SQLite trade history and snapshot storage
+- Paper mode and live mode
+- Dashboard + API controls
+- Weighted multi-strategy profiles
+- Backtesting and strategy comparison
+- SQLite storage for trades and equity snapshots
 
-## Important
+This project is for education and automation tooling. It is not financial advice.
 
-This project is a trading tool, not financial advice. Futures trading is high risk and can liquidate your account quickly. Start in `paper` mode first and verify every setting before using `live` mode.
+## Safety First
 
-The bot defaults to paper trading and will not place real orders unless you set `BOT_MODE=live` and provide valid Binance API credentials.
+Futures are high risk. A bad configuration can lose capital quickly.
+
+Before live trading:
+
+1. Run in paper mode first.
+2. Test your profile with backtests.
+3. Prefer Binance testnet before mainnet.
+4. Use conservative leverage and risk-per-trade.
+
+Live protection is enforced in code. Real orders require:
+
+- BOT_MODE=live
+- valid BINANCE_API_KEY and BINANCE_API_SECRET
+- BOT_LIVE_TRADING_CONFIRMED=true, or BINANCE_TESTNET=true
 
 ## Features
 
-- EMA crossing
-- MACD histogram and crossover behavior
-- RSI mean reversion
-- Bollinger band breakout/reversion
-- ADX trend filtering
-- Weighted multi-strategy profiles
-- Stop loss, take profit, and trailing stop support
-- Trade history in SQLite
-- Manual close for any open trade from the dashboard
-- Save and load strategy profiles from disk
-- Paper-trading backtest suite and strategy comparison reports
+- Strategy engine with weighted scoring and thresholds
+- Built-in indicators:
+  - EMA cross
+  - MACD (cross + momentum tendency)
+  - RSI
+  - Bollinger Bands
+  - ADX
+- Candle styles:
+  - raw
+  - heikin_ashi
+- Dynamic exit planning (support/resistance + volatility)
+- Risk-reward target via BOT_RISK_REWARD_RATIO
+- Leverage-aware position sizing caps
+- Manual close, pause/resume, run-once controls
+- Backtest reports saved to data/reports
+
+## Requirements
+
+- Linux/macOS/WSL
+- Python 3.10+
+- Binance Futures account for live/testnet usage
 
 ## Installation
 
-1. Create and activate a virtual environment.
-2. Install the dependencies.
-3. Copy `.env.example` to `.env` and fill in your Binance keys.
+### 1) Clone and enter the project
+
+```bash
+git clone <your-repo-url>
+cd binance-futures-bot
+```
+
+### 2) Create and activate virtual environment
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
+```
+
+### 3) Install dependencies
+
+Use either method:
+
+```bash
 pip install -r requirements.txt
+```
+
+or
+
+```bash
+pip install -e .
+```
+
+### 4) Configure environment
+
+```bash
 cp .env.example .env
 ```
 
-## Environment
+Edit .env with your preferred settings.
 
-Set these values in `.env`:
+## Quick Start
 
-- `BINANCE_API_KEY`
-- `BINANCE_API_SECRET`
-- `BOT_MODE` as `paper` or `live`
-- `BOT_SYMBOLS` for a comma-separated list of pairs
-- `BOT_TRADE_ALL_SYMBOLS=true` to scan all USDT futures pairs
-- `BOT_ALLOW_SHORT=true` to enable short positions
-- `BOT_LEVERAGE` and `BOT_MAX_LEVERAGE` to set leverage controls
-
-The rest of the settings are optional and can be tuned for risk, leverage, and behavior.
-
-## Run
-
-Start the monitoring dashboard and API:
+### Start dashboard and API
 
 ```bash
 futures-bot run-web
 ```
 
-Or run the bot loop without the web UI:
+Open:
+
+- http://127.0.0.1:8000
+
+### Run engine only (no dashboard)
 
 ```bash
 futures-bot run-bot
 ```
 
-Run a backtest from the CLI:
+### One-time strategy seed (default profile)
 
 ```bash
-futures-bot backtest --profile default --symbol BTCUSDT --symbol ETHUSDT
-futures-bot backtest --compare ema_cross macd rsi --symbol BTCUSDT
+futures-bot seed-strategy
 ```
 
-The dashboard is available at `http://127.0.0.1:8000`.
+## Commands
 
-The dashboard also includes a Backtest Runner panel where you can:
+### Run web dashboard
 
-- run one saved profile on selected symbols
-- compare multiple built-in strategies in one run
-- view PnL, win rate, and max drawdown summaries
-- store report JSON files under `data/reports/`
+```bash
+futures-bot run-web
+```
+
+### Run bot loop in terminal
+
+```bash
+futures-bot run-bot
+```
+
+### Run backtest for a saved profile
+
+```bash
+futures-bot backtest --profile trend_balanced_multi --symbol BTCUSDT --symbol ETHUSDT
+```
+
+### Compare built-in strategies in one run
+
+```bash
+futures-bot backtest --compare ema_cross macd rsi adx --symbol BTCUSDT
+```
+
+Backtest output is saved under data/reports as JSON.
+
+## Environment Configuration
+
+Core variables:
+
+- BINANCE_API_KEY
+- BINANCE_API_SECRET
+- BOT_MODE (paper or live)
+- BOT_SYMBOLS (comma-separated)
+- BOT_STRATEGY_PROFILE
+- BOT_INTERVAL (example: 1m, 5m, 15m, 1h)
+- BOT_CANDLES_LIMIT
+
+Risk and sizing:
+
+- BOT_RISK_PER_TRADE_PCT
+- BOT_RISK_REWARD_RATIO
+- BOT_LEVERAGE
+- BOT_MAX_LEVERAGE
+- BOT_MAX_OPEN_POSITIONS
+- BOT_MAX_POSITION_PCT
+- BOT_MAX_DAILY_LOSS_PCT
+- BOT_MIN_MARGIN_BUFFER_PCT
+- BOT_TRAILING_STOP_PCT
+
+Live safety:
+
+- BOT_LIVE_TRADING_CONFIRMED
+- BINANCE_TESTNET
+- BINANCE_BASE_URL (optional override)
+- BINANCE_TESTNET_URL (optional override)
+
+Storage:
+
+- BOT_DATA_DIR (default: data)
+- BOT_DB_PATH (default: data/bot.db)
+
+### Suggested safe baseline
+
+For first real tests:
+
+- BOT_MODE=paper
+- BOT_LEVERAGE=2 to 5
+- BOT_RISK_PER_TRADE_PCT=0.5 to 1.0
+- BOT_MAX_OPEN_POSITIONS=1 to 3
+- BOT_MAX_POSITION_PCT=10 to 20
+
+## Dashboard Guide
+
+From the web UI you can:
+
+- Start / stop engine
+- Pause / resume loop
+- Run one cycle on demand
+- Save and load strategy profiles
+- Run backtests with interval, candle limit, leverage controls
+- See active positions, scores, reasons, and account metrics
+- View persisted history chart from DB snapshots
+
+## API Reference
+
+Main endpoints:
+
+- GET /api/status
+- GET /api/trades?limit=200
+- GET /api/history?limit=2000
+- GET /api/exchange
+- POST /api/start
+- POST /api/stop
+- POST /api/pause
+- POST /api/resume
+- POST /api/run-once
+- POST /api/trades/{symbol}/close
+- GET /api/strategies
+- POST /api/strategies/save
+- POST /api/strategies/load/{name}
+- POST /api/backtest/run
+
+Example backtest payload:
+
+```json
+{
+  "profile": "trend_balanced_multi",
+  "symbols": ["BTCUSDT", "ETHUSDT"],
+  "interval": "5m",
+  "candles_limit": 1000,
+  "leverage": 5,
+  "compare": []
+}
+```
 
 ## Strategy Profiles
 
-Strategy profiles are saved under `data/strategies/` as JSON files. You can create a profile by posting to the dashboard API or by editing the JSON file directly. Profiles can be copied to another computer and loaded there.
+Profiles are JSON files in data/strategies.
 
-The default profile combines EMA, MACD, RSI, Bollinger Bands, and ADX with weighted voting.
+Each profile has:
 
-## Manual Control
+- name
+- threshold
+- description
+- rules[]
 
-From the dashboard you can:
+Each rule has:
 
-- start or stop the engine
-- run one cycle manually
-- pause and resume processing
-- close any open trade manually
-- inspect signal scores and reasons
+- name: ema_cross | macd | rsi | bollinger | adx
+- enabled: true/false
+- weight: numeric influence
+- params: indicator-specific parameters
 
-## Risk Controls
+### Scoring model
 
-The bot includes:
+Each enabled rule emits a score in [-1, 1].
 
-- per-trade risk sizing based on configured equity percentage
-- leverage-aware position sizing
-- stop loss, take profit, and trailing stop logic
-- max open positions
-- long-only mode if you do not want shorts
+Final score:
 
-For live-trading safety, set and review:
+score = sum(rule_score \* weight) / sum(abs(weight))
 
-- `BINANCE_TESTNET=true` to use Binance Futures testnet
-- `BOT_LIVE_TRADING_CONFIRMED=true` before any real live orders
-- `BOT_MAX_DAILY_LOSS_PCT`, `BOT_MAX_POSITION_PCT`, `BOT_MIN_MARGIN_BUFFER_PCT`, and `BOT_MAX_LEVERAGE`
+Action:
 
-Even with these controls, live futures trading can lose money quickly. Use conservative settings.
+- score >= threshold => long
+- score <= -threshold => short
+- otherwise => hold
 
-## Suggested Next Steps
+Higher threshold means fewer, stricter entries.
 
-1. Test in paper mode on a few symbols only.
-2. Adjust the strategy profile and risk settings.
-3. Create a Binance testnet or small-cap live configuration before scaling up.
+### Example custom profile
+
+```json
+{
+  "name": "my_profile",
+  "threshold": 0.72,
+  "description": "Balanced trend profile",
+  "rules": [
+    {
+      "name": "ema_cross",
+      "enabled": true,
+      "weight": 1.2,
+      "params": {
+        "fast_period": 7,
+        "slow_period": 21,
+        "candle_style": "heikin_ashi"
+      }
+    },
+    {
+      "name": "macd",
+      "enabled": true,
+      "weight": 1.0,
+      "params": {
+        "fast_period": 12,
+        "slow_period": 26,
+        "signal_period": 9,
+        "candle_style": "heikin_ashi"
+      }
+    },
+    {
+      "name": "adx",
+      "enabled": true,
+      "weight": 0.75,
+      "params": {
+        "period": 14,
+        "threshold": 20,
+        "candle_style": "heikin_ashi"
+      }
+    }
+  ]
+}
+```
+
+## Included Strategy Profiles
+
+Current profiles in data/strategies include:
+
+- ema7_50_trend_strict
+- ema7_50_adx_balanced
+- trend_conservative_multi
+- trend_balanced_multi
+- trend_aggressive_breakout
+- mean_reversion_range
+- adaptive_trend_guarded
+
+Use one by setting BOT_STRATEGY_PROFILE to the profile name.
+
+## Backtesting Notes
+
+Backtests run in paper execution mode with historical candles and use the same strategy scoring and position logic as runtime.
+
+Best practices:
+
+1. Compare multiple intervals (5m, 15m, 1h).
+2. Test several symbol groups.
+3. Evaluate both net PnL and drawdown.
+4. Re-test after any profile or risk change.
+
+## Data and Files
+
+- data/bot.db
+  - trades table
+  - snapshots table
+- data/strategies/\*.json
+- data/reports/\*.json
+
+## Troubleshooting
+
+### ModuleNotFoundError: dotenv
+
+Activate your virtual environment and reinstall dependencies:
+
+```bash
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### Profile does not switch from dashboard
+
+The bot must be stopped before loading a different profile.
+
+### No trades are opening
+
+Check:
+
+1. Threshold may be too high.
+2. Risk/margin limits may be blocking entries.
+3. Strategy may be returning hold for current market.
+4. Symbol list and interval may be too restrictive.
+
+## Development
+
+Run tests:
+
+```bash
+python -m unittest tests.test_trading_bot
+```
+
+Compile check:
+
+```bash
+python -m compileall src tests
+```
+
+## Final Notes
+
+Start small, validate often, and treat every profile change as a new system to test.

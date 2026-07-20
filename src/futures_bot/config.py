@@ -44,6 +44,8 @@ def load_bot_config() -> BotConfig:
     config.max_leverage = _read_int("BOT_MAX_LEVERAGE", config.max_leverage)
     config.risk_per_trade_pct = _read_float(
         "BOT_RISK_PER_TRADE_PCT", config.risk_per_trade_pct)
+    config.risk_reward_ratio = _read_float(
+        "BOT_RISK_REWARD_RATIO", config.risk_reward_ratio)
     config.max_open_positions = _read_int(
         "BOT_MAX_OPEN_POSITIONS", config.max_open_positions)
     config.max_position_pct = _read_float(

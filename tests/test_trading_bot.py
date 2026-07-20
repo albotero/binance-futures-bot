@@ -1,6 +1,6 @@
 from __future__ import annotations
 from futures_bot.storage import SQLiteStore
-from futures_bot.strategies.engine import StrategyEvaluation
+from futures_bot.strategies.engine import StrategyEvaluation, evaluate_profile
 from futures_bot.strategies.builtins import AdxStrategy, BollingerStrategy, EmaCrossStrategy, MacdStrategy, RsiReversionStrategy, heikin_ashi
 from futures_bot.models import BotConfig, Side, StrategyProfile, StrategyRule, TradeStatus
 from futures_bot.execution_paper import PaperExecution
@@ -73,6 +73,31 @@ class IndicatorTests(unittest.TestCase):
         self.assertIsNotNone(bollinger_signal.reason)
         self.assertIsNotNone(adx_signal.reason)
 
+    def test_profile_evaluation_builds_directional_exit_plan(self) -> None:
+        profile = StrategyProfile(
+            name="ha-trend",
+            threshold=0.3,
+            rules=[
+                StrategyRule(name="ema_cross", params={
+                             "fast_period": 7, "slow_period": 21, "candle_style": "heikin_ashi"}),
+                StrategyRule(name="macd", params={
+                             "candle_style": "heikin_ashi"}),
+                StrategyRule(name="adx", params={
+                             "candle_style": "heikin_ashi"}),
+            ],
+        )
+        candles = make_candles(
+            [100.0] * 20 + [101.0, 102.0, 104.0, 106.0, 109.0, 113.0, 118.0, 124.0, 131.0, 139.0])
+
+        evaluation = evaluate_profile(profile, candles, "BTCUSDT")
+
+        self.assertEqual(evaluation.action, "long")
+        self.assertIsNotNone(evaluation.exit_plan)
+        self.assertLess(evaluation.exit_plan.stop_loss_price,
+                        candles[-1]["close"])
+        self.assertGreater(
+            evaluation.exit_plan.take_profit_price, candles[-1]["close"])
+
 
 class EngineTransitionTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -89,6 +114,7 @@ class EngineTransitionTests(unittest.TestCase):
             leverage=2,
             max_leverage=2,
             allow_short=True,
+            risk_reward_ratio=2.2,
         )
         self.engine = TradingEngine(self.config)
         self.engine.execution = PaperExecution(
@@ -122,6 +148,72 @@ class EngineTransitionTests(unittest.TestCase):
 
         self.assertTrue(self.engine.state.paused)
         self.assertIsNone(self.engine.execution.get_position("ETHUSDT"))
+
+    def test_open_from_signal_uses_strategy_exit_plan(self) -> None:
+        evaluation = StrategyEvaluation(
+            score=1.0,
+            action="long",
+            reasons=["trend"],
+            signals=[],
+            exit_plan=None,
+        )
+        evaluation.exit_plan = type("Plan", (), {
+            "stop_loss_price": 96.0,
+            "take_profit_price": 109.0,
+            "trailing_stop_price": 97.5,
+        })()
+
+        self.engine._open_from_signal("BTCUSDT", 100.0, "long", evaluation)
+
+        position = self.engine.execution.get_position("BTCUSDT")
+        self.assertIsNotNone(position)
+        self.assertEqual(position.stop_loss_price, 96.0)
+        self.assertEqual(position.take_profit_price, 109.0)
+        self.assertEqual(position.trailing_stop_price, 97.5)
+
+    def test_leverage_expands_position_size_when_cap_binds(self) -> None:
+        evaluation = StrategyEvaluation(
+            score=1.0,
+            action="long",
+            reasons=["trend"],
+            signals=[],
+            exit_plan=None,
+        )
+        evaluation.exit_plan = type("Plan", (), {
+            "stop_loss_price": 99.5,
+            "take_profit_price": 101.5,
+            "trailing_stop_price": 99.7,
+        })()
+
+        self.engine.config.max_position_pct = 25.0
+        self.engine.config.leverage = 2
+        self.engine.config.max_leverage = 2
+        self.engine._open_from_signal("BTCUSDT", 100.0, "long", evaluation)
+        low_leverage_position = self.engine.execution.get_position("BTCUSDT")
+        self.assertIsNotNone(low_leverage_position)
+        low_leverage_qty = low_leverage_position.quantity
+
+        self.engine.execution = PaperExecution(
+            initial_equity=self.config.initial_equity)
+        self.engine.config.leverage = 10
+        self.engine.config.max_leverage = 10
+        self.engine._open_from_signal("ETHUSDT", 100.0, "long", evaluation)
+        high_leverage_position = self.engine.execution.get_position("ETHUSDT")
+        self.assertIsNotNone(high_leverage_position)
+
+        self.assertGreater(high_leverage_position.quantity, low_leverage_qty)
+        self.assertAlmostEqual(low_leverage_qty, 5.0, places=5)
+        self.assertAlmostEqual(high_leverage_position.quantity, 20.0, places=5)
+
+    def test_fallback_take_profit_uses_risk_reward_ratio(self) -> None:
+        self.engine._open_from_signal("BTCUSDT", 100.0, "long", None)
+
+        position = self.engine.execution.get_position("BTCUSDT")
+        self.assertIsNotNone(position)
+        risk = position.entry_price - position.stop_loss_price
+        reward = position.take_profit_price - position.entry_price
+        self.assertAlmostEqual(
+            reward / risk, self.config.risk_reward_ratio, places=5)
 
 
 class BacktestTests(unittest.TestCase):

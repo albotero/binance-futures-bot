@@ -32,6 +32,32 @@ def build_app(engine: TradingEngine | None = None) -> FastAPI:
     def trades(limit: int = 200) -> dict:
         return {"trades": bot.storage.list_trades(limit=limit)}
 
+    @app.get("/api/history")
+    def history(limit: int = 2000) -> dict:
+        return {"snapshots": bot.storage.list_snapshots(limit=limit)}
+
+    @app.get("/api/exchange")
+    def exchange_view() -> dict:
+        symbols = bot.list_symbols()[:8]
+        prices: dict[str, float | None] = {}
+        for symbol in symbols:
+            try:
+                prices[symbol] = bot.data.latest_price(symbol)
+            except Exception:  # noqa: BLE001
+                prices[symbol] = None
+        return {
+            "mode": bot.config.mode,
+            "testnet": bot.config.testnet,
+            "base_url": bot.config.binance_base_url,
+            "quote_asset": bot.config.quote_asset,
+            "interval": bot.config.interval,
+            "candle_style": bot.config.candle_style,
+            "leverage": bot.config.leverage,
+            "max_leverage": bot.config.max_leverage,
+            "tracked_symbols": symbols,
+            "latest_prices": prices,
+        }
+
     @app.post("/api/start")
     def start() -> dict:
         bot.start()

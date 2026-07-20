@@ -218,6 +218,11 @@ button:disabled {
   gap: 12px;
 }
 
+.inline-pills {
+  grid-template-columns: repeat(auto-fit, minmax(180px, max-content));
+  align-items: start;
+}
+
 .stack-metrics {
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }

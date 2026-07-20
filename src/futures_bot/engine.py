@@ -19,6 +19,7 @@ from .strategies.engine import StrategyEvaluation, evaluate_profile
 class BotState:
     running: bool = False
     paused: bool = False
+    started_at: str = ""
     last_run_at: str = ""
     last_error: str = ""
     active_symbols: list[str] = field(default_factory=list)
@@ -32,6 +33,7 @@ class BotState:
         return {
             "running": self.running,
             "paused": self.paused,
+            "started_at": self.started_at,
             "last_run_at": self.last_run_at,
             "last_error": self.last_error,
             "active_symbols": list(self.active_symbols),
@@ -74,9 +76,12 @@ class TradingEngine:
 
     def start(self) -> None:
         if self.thread and self.thread.is_alive():
+            self.state.running = True
             return
         self._stop_event.clear()
         self.state.running = True
+        if not self.state.started_at:
+            self.state.started_at = utcnow().isoformat()
         self.thread = threading.Thread(
             target=self._run_loop, name="trading-engine", daemon=True)
         self.thread.start()
@@ -84,6 +89,7 @@ class TradingEngine:
     def stop(self) -> None:
         self._stop_event.set()
         self.state.running = False
+        self.state.started_at = ""
 
     def pause(self) -> None:
         self.state.paused = True
@@ -121,6 +127,10 @@ class TradingEngine:
         return closed
 
     def status(self) -> dict:
+        thread_alive = bool(self.thread and self.thread.is_alive())
+        self.state.running = thread_alive
+        if not thread_alive:
+            self.state.started_at = ""
         metrics = self.execution.snapshot()
         positions = [position.to_dict()
                      for position in self.execution.list_positions()]
@@ -153,7 +163,7 @@ class TradingEngine:
                     current_price = float(candles[-1]["close"])
                     self.execution.mark_price(symbol, current_price)
                     evaluation = evaluate_profile(
-                        self.profile, candles, symbol)
+                        self.profile, candles, symbol, self.config.risk_reward_ratio)
                     self.state.latest_actions[symbol] = evaluation.action
                     self.state.latest_scores[symbol] = evaluation.score
                     self.state.latest_reasons[symbol] = evaluation.reasons
@@ -186,12 +196,13 @@ class TradingEngine:
                 if closed:
                     self.storage.record_close(closed)
                 self._open_from_signal(
-                    symbol, current_price, evaluation.action)
+                    symbol, current_price, evaluation.action, evaluation)
             return
 
-        self._open_from_signal(symbol, current_price, evaluation.action)
+        self._open_from_signal(symbol, current_price,
+                               evaluation.action, evaluation)
 
-    def _open_from_signal(self, symbol: str, current_price: float, action: str) -> None:
+    def _open_from_signal(self, symbol: str, current_price: float, action: str, evaluation: StrategyEvaluation | None = None) -> None:
         if self.config.mode.lower() == "live" and not self.config.testnet and not self.config.live_trading_confirmed:
             return
         if len(self.execution.list_positions()) >= self.config.max_open_positions:
@@ -212,25 +223,30 @@ class TradingEngine:
         if leverage <= 0:
             return
         risk_amount = equity * (self.config.risk_per_trade_pct / 100)
-        stop_distance = current_price * (self.config.stop_loss_pct / 100)
+        exit_plan = evaluation.exit_plan if evaluation else None
+        stop_distance = abs(
+            current_price - exit_plan.stop_loss_price) if exit_plan else current_price * (self.config.stop_loss_pct / 100)
         if stop_distance <= 0:
             return
         quantity = max((risk_amount / stop_distance), 0.0)
-        max_notional = equity * (self.config.max_position_pct / 100)
+        max_notional = equity * (self.config.max_position_pct / 100) * leverage
         if max_notional > 0:
             quantity = min(quantity, max_notional / max(current_price, 1e-9))
         if quantity <= 0:
             return
         side = Side.LONG if action == "long" else Side.SHORT
-        stop_loss_price = current_price * \
-            (1 - self.config.stop_loss_pct / 100) if side == Side.LONG else current_price * \
-            (1 + self.config.stop_loss_pct / 100)
-        take_profit_price = current_price * \
-            (1 + self.config.take_profit_pct / 100) if side == Side.LONG else current_price * \
-            (1 - self.config.take_profit_pct / 100)
-        trailing_stop_price = current_price * \
-            (1 - self.config.trailing_stop_pct / 100) if side == Side.LONG else current_price * \
-            (1 + self.config.trailing_stop_pct / 100)
+        stop_loss_price = exit_plan.stop_loss_price if exit_plan else (
+            current_price * (1 - self.config.stop_loss_pct /
+                             100) if side == Side.LONG else current_price * (1 + self.config.stop_loss_pct / 100)
+        )
+        take_profit_price = exit_plan.take_profit_price if exit_plan else (
+            current_price + stop_distance * self.config.risk_reward_ratio if side == Side.LONG else current_price -
+            stop_distance * self.config.risk_reward_ratio
+        )
+        trailing_stop_price = exit_plan.trailing_stop_price if exit_plan else (
+            current_price * (1 - self.config.trailing_stop_pct /
+                             100) if side == Side.LONG else current_price * (1 + self.config.trailing_stop_pct / 100)
+        )
         position = Position(
             symbol=symbol,
             side=side,

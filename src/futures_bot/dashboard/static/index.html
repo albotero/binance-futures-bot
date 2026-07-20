@@ -19,10 +19,11 @@
           </p>
         </div>
         <div class="hero-actions">
-          <button data-action="start">Start</button>
-          <button data-action="run-once" class="secondary">Run Once</button>
-          <button data-action="pause" class="ghost">Pause</button>
-          <button data-action="stop" class="danger">Stop</button>
+          <button id="startButton" data-action="start">Start</button>
+          <div id="runtimeTimer" class="pill runtime-timer">Stopped</div>
+          <button id="runOnceButton" data-action="run-once" class="secondary">Run Once</button>
+          <button id="pauseButton" data-action="pause" class="ghost">Pause</button>
+          <button id="stopButton" data-action="stop" class="danger">Stop</button>
         </div>
       </section>
 
@@ -32,8 +33,9 @@
         <article class="panel chart-panel">
           <div class="panel-head">
             <h2>Equity and PnL</h2>
-            <p>Snapshot from the current engine state.</p>
+            <p>Full bot history from stored snapshots, not just this browser session.</p>
           </div>
+          <div id="historySummary" class="stack"></div>
           <canvas id="performanceChart" height="120"></canvas>
         </article>
 
@@ -49,12 +51,22 @@
       <section class="panel-grid two-col">
         <article class="panel">
           <div class="panel-head">
+            <h2>Exchange Overview</h2>
+            <p>Runtime market and exchange settings for the active session.</p>
+          </div>
+          <div id="exchangeOverview" class="stack"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
             <h2>Open Positions</h2>
             <p>Manually close any trade at any time.</p>
           </div>
           <div id="positions"></div>
         </article>
+      </section>
 
+      <section class="panel-grid two-col">
         <article class="panel">
           <div class="panel-head">
             <h2>Recent Trades</h2>
