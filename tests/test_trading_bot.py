@@ -1,5 +1,6 @@
 from __future__ import annotations
 from futures_bot.storage import SQLiteStore
+from futures_bot.api import build_app
 from futures_bot.strategies.engine import StrategyEvaluation, evaluate_profile
 from futures_bot.strategies.builtins import AdxStrategy, BollingerStrategy, EmaCrossStrategy, MacdStrategy, RsiReversionStrategy, heikin_ashi
 from futures_bot.models import BotConfig, Position, Side, StrategyProfile, StrategyRule, TradeStatus
@@ -7,13 +8,15 @@ from futures_bot.execution_paper import PaperExecution
 from futures_bot.execution_live import BinanceFuturesExecution
 from futures_bot.engine import TradingEngine
 from futures_bot.config import default_strategy_profile
-from futures_bot.backtest import compare_profiles, parse_backtest_duration, run_backtest_suite
+from futures_bot.backtest import BacktestReport, BacktestSymbolReport, BacktestSuiteResult, compare_profiles, parse_backtest_duration, run_backtest_suite
 
 import tempfile
 import unittest
+import time
 from pathlib import Path
 import sys
 from unittest.mock import patch
+from fastapi.testclient import TestClient
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -407,6 +410,200 @@ class BacktestTests(unittest.TestCase):
             self.assertEqual(symbols, ["BTCUSDC", "ETHUSDC"])
             self.assertEqual(report.requested_symbols, 2)
             self.assertEqual(report.counted_symbols, 2)
+
+    def test_backtest_run_returns_job_and_polls_to_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = BotConfig(
+                mode="paper",
+                initial_equity=1000.0,
+                data_dir=str(Path(temp_dir) / "data"),
+                db_path=str(Path(temp_dir) / "bot.db"),
+                symbols=["BTCUSDT"],
+                strategy_profile="default",
+            )
+
+            class FakeEngine:
+                def __init__(self) -> None:
+                    self.config = config
+                    self.profile = StrategyProfile(name="default")
+
+            report = BacktestSuiteResult(
+                created_at="2026-07-20T00:00:00+00:00",
+                reports=[
+                    BacktestReport(
+                        profile_name="default",
+                        created_at="2026-07-20T00:00:00+00:00",
+                        start_equity=1000.0,
+                        final_equity=1010.0,
+                        net_pnl=10.0,
+                        win_rate=100.0,
+                        max_drawdown=0.0,
+                        requested_symbols=1,
+                        counted_symbols=1,
+                        symbol_reports=[
+                            BacktestSymbolReport(
+                                symbol="BTCUSDT",
+                                final_equity=1010.0,
+                                net_pnl=10.0,
+                                win_rate=100.0,
+                                max_drawdown=0.0,
+                            )
+                        ],
+                    )
+                ],
+            )
+
+            def fake_run(*args: object, progress_callback=None, **kwargs: object) -> BacktestSuiteResult:
+                if progress_callback:
+                    progress_callback(
+                        {
+                            "stage": "profile_start",
+                            "profile": "default",
+                            "profile_index": 1,
+                            "profile_total": 1,
+                            "symbol_total": 1,
+                        }
+                    )
+                    progress_callback(
+                        {
+                            "stage": "symbol",
+                            "profile": "default",
+                            "symbol": "BTCUSDT",
+                            "completed": 1,
+                            "total": 1,
+                        }
+                    )
+                    progress_callback(
+                        {
+                            "stage": "profile_complete",
+                            "profile": "default",
+                            "profile_index": 1,
+                            "profile_total": 1,
+                        }
+                    )
+                return report
+
+            app = build_app(FakeEngine())
+            client = TestClient(app)
+            report_path = Path(temp_dir) / "report.json"
+
+            with patch("futures_bot.api.run_backtest_suite", side_effect=fake_run):
+                with patch("futures_bot.api.save_backtest_report", return_value=report_path):
+                    response = client.post(
+                        "/api/backtest/run",
+                        json={
+                            "profile": "default",
+                            "symbols": ["BTCUSDT"],
+                            "duration": "15d",
+                            "interval": "5m",
+                            "leverage": 3,
+                        },
+                    )
+
+                    self.assertEqual(response.status_code, 200)
+                    payload = response.json()
+                    self.assertTrue(payload["ok"])
+                    job_id = payload["job_id"]
+
+                    job = None
+                    for _ in range(30):
+                        job_response = client.get(
+                            f"/api/backtest/jobs/{job_id}")
+                        self.assertEqual(job_response.status_code, 200)
+                        job = job_response.json()["job"]
+                        if job["status"] in {"completed", "failed"}:
+                            break
+                        time.sleep(0.05)
+
+                    self.assertIsNotNone(job)
+                    self.assertEqual(job["status"], "completed")
+                    self.assertEqual(job["result"]["path"], str(report_path))
+                    self.assertEqual(
+                        job["result"]["report"]["reports"][0]["profile_name"], "default")
+
+    def test_backtest_job_can_be_canceled(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = BotConfig(
+                mode="paper",
+                initial_equity=1000.0,
+                data_dir=str(Path(temp_dir) / "data"),
+                db_path=str(Path(temp_dir) / "bot.db"),
+                symbols=["BTCUSDT"],
+                strategy_profile="default",
+            )
+
+            class FakeEngine:
+                def __init__(self) -> None:
+                    self.config = config
+                    self.profile = StrategyProfile(name="default")
+
+            report = BacktestSuiteResult(
+                created_at="2026-07-20T00:00:00+00:00",
+                reports=[
+                    BacktestReport(
+                        profile_name="default",
+                        created_at="2026-07-20T00:00:00+00:00",
+                        start_equity=1000.0,
+                        final_equity=1010.0,
+                        net_pnl=10.0,
+                        win_rate=100.0,
+                        max_drawdown=0.0,
+                        requested_symbols=1,
+                        counted_symbols=1,
+                        symbol_reports=[
+                            BacktestSymbolReport(
+                                symbol="BTCUSDT",
+                                final_equity=1010.0,
+                                net_pnl=10.0,
+                                win_rate=100.0,
+                                max_drawdown=0.0,
+                            )
+                        ],
+                    )
+                ],
+            )
+
+            def fake_run(*args: object, **kwargs: object) -> BacktestSuiteResult:
+                time.sleep(0.2)
+                return report
+
+            app = build_app(FakeEngine())
+            client = TestClient(app)
+
+            with patch("futures_bot.api.run_backtest_suite", side_effect=fake_run):
+                with patch("futures_bot.api.save_backtest_report") as save_mock:
+                    response = client.post(
+                        "/api/backtest/run",
+                        json={
+                            "profile": "default",
+                            "symbols": ["BTCUSDT"],
+                            "duration": "15d",
+                            "interval": "5m",
+                            "leverage": 3,
+                        },
+                    )
+
+                    self.assertEqual(response.status_code, 200)
+                    job_id = response.json()["job_id"]
+
+                    cancel_response = client.post(
+                        f"/api/backtest/jobs/{job_id}/cancel")
+                    self.assertEqual(cancel_response.status_code, 200)
+
+                    job = None
+                    for _ in range(40):
+                        job_response = client.get(
+                            f"/api/backtest/jobs/{job_id}")
+                        self.assertEqual(job_response.status_code, 200)
+                        job = job_response.json()["job"]
+                        if job["status"] == "canceled":
+                            break
+                        time.sleep(0.05)
+
+                    self.assertIsNotNone(job)
+                    self.assertEqual(job["status"], "canceled")
+                    self.assertEqual(job["message"], "Backtest canceled")
+                    save_mock.assert_not_called()
 
 
 class LiveExecutionTests(unittest.TestCase):

@@ -5,6 +5,7 @@ const state = {
   latestStrategies: null,
   latestExchange: null,
   backtestResult: null,
+  backtestJob: null,
   backtestError: "",
   backtestLoading: false,
   backtestForm: null,
@@ -74,6 +75,10 @@ async function request(path, options = {}) {
     throw new Error(await response.text())
   }
   return response.json()
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function metricCard(label, value, tone = "") {
@@ -159,6 +164,73 @@ function formatUtcHuman(value) {
     timeZone: DISPLAY_TIME_ZONE,
     timeZoneName: "short",
   }).format(date)
+}
+
+function formatChartLabel(value) {
+  if (!value) {
+    return ""
+  }
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return value
+  }
+
+  const historySpanMs = getHistorySpanMs()
+  const oneDayMs = 24 * 60 * 60 * 1000
+  const thirtyDaysMs = 30 * oneDayMs
+
+  if (historySpanMs <= oneDayMs) {
+    return new Intl.DateTimeFormat(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+      timeZone: DISPLAY_TIME_ZONE,
+    }).format(date)
+  }
+
+  if (historySpanMs <= thirtyDaysMs) {
+    return new Intl.DateTimeFormat(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+      timeZone: DISPLAY_TIME_ZONE,
+    }).format(date)
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    timeZone: DISPLAY_TIME_ZONE,
+  }).format(date)
+}
+
+function getHistorySpanMs() {
+  if (state.history.length < 2) {
+    return 0
+  }
+  const first = new Date(state.history[0]?.rawLabel || "")
+  const last = new Date(state.history[state.history.length - 1]?.rawLabel || "")
+  if (Number.isNaN(first.getTime()) || Number.isNaN(last.getTime())) {
+    return 0
+  }
+  return Math.max(0, last.getTime() - first.getTime())
+}
+
+function sparseTickLabel(value, index, labels) {
+  const total = labels.length
+  if (!total) {
+    return value
+  }
+  if (total <= 6) {
+    return value
+  }
+  const targetTicks = Math.min(6, total)
+  const step = Math.max(1, Math.ceil(total / targetTicks))
+  const isLast = index === total - 1
+  return index % step === 0 || isLast ? value : ""
 }
 
 function formatRuntime(startedAt) {
@@ -421,8 +493,16 @@ function captureBacktestFormFromDom() {
 
 function renderBacktestResult() {
   const root = document.getElementById("backtestResult")
-  if (state.backtestLoading) {
-    root.innerHTML = '<div class="pill"><span class="spinner"></span> Backtest is running, please wait...</div>'
+  const job = state.backtestJob
+  if (state.backtestLoading || (job && job.status !== "completed" && job.status !== "failed")) {
+    const progress = Number(job?.progress || 0)
+    const message = job?.message || "Backtest is running, please wait..."
+    const canCancel = Boolean(job && ["queued", "running", "cancel_requested"].includes(job.status))
+    root.innerHTML = `
+      <div class="pill"><span class="spinner"></span> ${message}</div>
+      <div class="pill">Progress: ${formatNumber(progress, 0)}%</div>
+      ${canCancel ? '<div class="pill"><button data-action="cancel-backtest" class="danger">Cancel Backtest</button></div>' : ""}
+    `
     return
   }
   if (state.backtestError) {
@@ -544,9 +624,29 @@ function updateChart(metrics) {
       },
       options: {
         responsive: true,
-        plugins: { legend: { labels: { color: "#e5eefc" } } },
+        plugins: {
+          legend: { labels: { color: "#e5eefc" } },
+          tooltip: {
+            callbacks: {
+              title(items) {
+                const point = state.history[items[0]?.dataIndex ?? 0]
+                return point?.rawLabel ? formatUtcHuman(point.rawLabel) : items[0]?.label || ""
+              },
+            },
+          },
+        },
         scales: {
-          x: { ticks: { color: "#94a3b8" }, grid: { color: "rgba(148, 163, 184, 0.12)" } },
+          x: {
+            ticks: {
+              color: "#94a3b8",
+              maxRotation: 0,
+              autoSkip: false,
+              callback(value, index) {
+                return sparseTickLabel(this.getLabelForValue(value), index, labels)
+              },
+            },
+            grid: { display: false },
+          },
           y: { ticks: { color: "#94a3b8" }, grid: { color: "rgba(148, 163, 184, 0.12)" } },
         },
       },
@@ -564,7 +664,7 @@ function updateHistoryFromSnapshots(snapshots, currentMetrics) {
     const metrics = snapshot.metrics || {}
     const label = snapshot.created_at || String(index + 1)
     return {
-      label: formatUtcHuman(label),
+      label: formatChartLabel(label),
       rawLabel: label,
       equity: Number(metrics.equity || 0),
       pnl: Number(metrics.realized_pnl || 0) + Number(metrics.unrealized_pnl || 0),
@@ -623,6 +723,8 @@ async function runBacktestFromDashboard() {
 
   state.backtestLoading = true
   state.backtestError = ""
+  state.backtestResult = null
+  state.backtestJob = null
   renderBacktestControls()
   renderBacktestResult()
 
@@ -648,19 +750,66 @@ async function runBacktestFromDashboard() {
   }
 
   try {
-    const result = await request("/api/backtest/run", {
+    const startResult = await request("/api/backtest/run", {
       method: "POST",
       body: JSON.stringify(payload),
     })
-    state.backtestResult = result
-    state.backtestError = ""
+    state.backtestJob = {
+      job_id: startResult.job_id,
+      status: "queued",
+      progress: 0,
+      message: "Queued",
+    }
+    renderBacktestResult()
+    await pollBacktestJob(startResult.job_id)
   } catch (error) {
     state.backtestResult = null
+    state.backtestJob = null
     state.backtestError = parseApiError(error.message || "Backtest request failed")
   } finally {
     state.backtestLoading = false
   }
   renderBacktestControls()
+  renderBacktestResult()
+}
+
+async function pollBacktestJob(jobId) {
+  while (true) {
+    const payload = await request(`/api/backtest/jobs/${encodeURIComponent(jobId)}`)
+    const job = payload.job || {}
+    state.backtestJob = job
+    if (job.status === "completed") {
+      state.backtestResult = job.result || null
+      state.backtestError = ""
+      renderBacktestResult()
+      return
+    }
+    if (job.status === "failed") {
+      state.backtestResult = null
+      state.backtestError = job.error || "Backtest failed"
+      renderBacktestResult()
+      return
+    }
+    if (job.status === "canceled") {
+      state.backtestResult = null
+      state.backtestError = "Backtest canceled"
+      renderBacktestResult()
+      return
+    }
+    renderBacktestResult()
+    await sleep(1200)
+  }
+}
+
+async function cancelBacktestJob() {
+  const jobId = state.backtestJob?.job_id
+  if (!jobId) {
+    return
+  }
+  const response = await request(`/api/backtest/jobs/${encodeURIComponent(jobId)}/cancel`, {
+    method: "POST",
+  })
+  state.backtestJob = response.job || state.backtestJob
   renderBacktestResult()
 }
 
@@ -708,6 +857,11 @@ document.addEventListener("click", async (event) => {
 
   if (action === "run-backtest") {
     await runBacktestFromDashboard()
+    return
+  }
+
+  if (action === "cancel-backtest") {
+    await cancelBacktestJob()
     return
   }
 

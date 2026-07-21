@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any, Callable
 
 from .config import default_strategy_profile, resolve_path
 from .execution_paper import PaperExecution
@@ -85,14 +87,39 @@ def run_backtest_suite(
     profiles: list[StrategyProfile],
     symbols: list[str] | None = None,
     all_symbols: bool = False,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> BacktestSuiteResult:
     market_data = BinanceMarketData(
         config.api_key, config.api_secret, config.binance_base_url)
     selected_symbols = resolve_backtest_symbols(
         config, market_data, symbols=symbols, all_symbols=all_symbols)
     created_at = utcstamp()
-    reports = [run_backtest(config, market_data, profile,
-                            selected_symbols) for profile in profiles]
+    reports: list[BacktestReport] = []
+    for index, profile in enumerate(profiles, start=1):
+        if progress_callback:
+            progress_callback({
+                "stage": "profile_start",
+                "profile": profile.name,
+                "profile_index": index,
+                "profile_total": len(profiles),
+                "symbol_total": len(selected_symbols),
+            })
+        report = run_backtest(
+            config,
+            market_data,
+            profile,
+            selected_symbols,
+            progress_callback=progress_callback,
+        )
+        reports.append(report)
+        if progress_callback:
+            progress_callback({
+                "stage": "profile_complete",
+                "profile": profile.name,
+                "profile_index": index,
+                "profile_total": len(profiles),
+                "symbol_total": len(selected_symbols),
+            })
     return BacktestSuiteResult(created_at=created_at, reports=reports)
 
 
@@ -124,44 +151,92 @@ def run_backtest(
     market_data: BinanceMarketData,
     profile: StrategyProfile,
     symbols: list[str],
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> BacktestReport:
     if not symbols:
         symbols = list(config.symbols)
 
     allocation = max(config.initial_equity / max(len(symbols), 1), 1.0)
-    symbol_reports: list[BacktestSymbolReport] = []
     skipped_symbols: list[str] = []
     total_final_equity = 0.0
     counted_symbols = 0
+    symbol_results: dict[str, BacktestSymbolReport | str] = {}
 
-    for symbol in symbols:
+    def run_symbol(symbol: str) -> BacktestSymbolReport:
+        candles = fetch_backtest_candles(
+            market_data,
+            symbol,
+            config.interval,
+            config.backtest_duration,
+        )
+        if not candles:
+            raise ValueError("No candles returned")
+        return _run_symbol_backtest(config, profile, symbol, candles, allocation)
+
+    if len(symbols) == 1:
+        symbol = symbols[0]
         try:
-            candles = fetch_backtest_candles(
-                market_data,
-                symbol,
-                config.interval,
-                config.backtest_duration,
-            )
-            if not candles:
-                raise ValueError("No candles returned")
-            result = _run_symbol_backtest(
-                config, profile, symbol, candles, allocation)
+            symbol_results[symbol] = run_symbol(symbol)
+        except Exception as exc:  # noqa: BLE001
+            symbol_results[symbol] = str(exc)
+        if progress_callback:
+            progress_callback({
+                "stage": "symbol",
+                "profile": profile.name,
+                "symbol": symbol,
+                "completed": 1,
+                "total": 1,
+            })
+    else:
+        max_workers = min(6, len(symbols))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_symbol = {
+                executor.submit(run_symbol, symbol): symbol for symbol in symbols
+            }
+            for future in as_completed(future_to_symbol):
+                symbol = future_to_symbol[future]
+                try:
+                    symbol_results[symbol] = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    symbol_results[symbol] = str(exc)
+                if progress_callback:
+                    progress_callback({
+                        "stage": "symbol",
+                        "profile": profile.name,
+                        "symbol": symbol,
+                        "completed": len(symbol_results),
+                        "total": len(symbols),
+                    })
+
+    symbol_reports: list[BacktestSymbolReport] = []
+    for symbol in symbols:
+        result = symbol_results.get(symbol)
+        if isinstance(result, BacktestSymbolReport):
             symbol_reports.append(result)
             total_final_equity += result.final_equity
             counted_symbols += 1
-        except Exception as exc:  # noqa: BLE001
-            skipped_symbols.append(symbol)
-            symbol_reports.append(
-                BacktestSymbolReport(
-                    symbol=symbol,
-                    final_equity=0.0,
-                    net_pnl=0.0,
-                    win_rate=0.0,
-                    max_drawdown=0.0,
-                    counted=False,
-                    skip_reason=str(exc),
-                )
+            continue
+
+        skipped_symbols.append(symbol)
+        symbol_reports.append(
+            BacktestSymbolReport(
+                symbol=symbol,
+                final_equity=0.0,
+                net_pnl=0.0,
+                win_rate=0.0,
+                max_drawdown=0.0,
+                counted=False,
+                skip_reason=str(result) if result else "Backtest failed",
             )
+        )
+
+    if progress_callback:
+        progress_callback({
+            "stage": "profile_done",
+            "profile": profile.name,
+            "completed_symbols": len(symbols),
+            "total_symbols": len(symbols),
+        })
 
     total_start_equity = allocation * counted_symbols
 
@@ -199,10 +274,17 @@ def compare_profiles(
     profile_names: list[str],
     symbols: list[str] | None = None,
     all_symbols: bool = False,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> BacktestSuiteResult:
     profiles = [_single_strategy_profile(
         name, config.candle_style) for name in profile_names]
-    return run_backtest_suite(config, profiles, symbols, all_symbols=all_symbols)
+    return run_backtest_suite(
+        config,
+        profiles,
+        symbols,
+        all_symbols=all_symbols,
+        progress_callback=progress_callback,
+    )
 
 
 def parse_backtest_duration(value: str) -> timedelta:
