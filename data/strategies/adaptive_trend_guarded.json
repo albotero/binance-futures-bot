@@ -1,0 +1,59 @@
+{
+  "name": "adaptive_trend_guarded",
+  "threshold": 0.58,
+  "description": "Trend-following core with momentum and pullback confirmation, plus ADX trend strength guard.",
+  "rules": [
+    {
+      "name": "ema_cross",
+      "enabled": true,
+      "weight": 1.5,
+      "params": {
+        "fast_period": 10,
+        "slow_period": 55,
+        "candle_style": "heikin_ashi"
+      }
+    },
+    {
+      "name": "macd",
+      "enabled": true,
+      "weight": 1.25,
+      "params": {
+        "fast_period": 12,
+        "slow_period": 26,
+        "signal_period": 9,
+        "candle_style": "heikin_ashi"
+      }
+    },
+    {
+      "name": "adx",
+      "enabled": true,
+      "weight": 1.1,
+      "params": {
+        "period": 14,
+        "threshold": 24,
+        "candle_style": "heikin_ashi"
+      }
+    },
+    {
+      "name": "rsi",
+      "enabled": true,
+      "weight": 0.85,
+      "params": {
+        "period": 14,
+        "oversold": 35,
+        "overbought": 68,
+        "candle_style": "heikin_ashi"
+      }
+    },
+    {
+      "name": "bollinger",
+      "enabled": true,
+      "weight": 0.6,
+      "params": {
+        "period": 20,
+        "std_dev": 2.2,
+        "candle_style": "heikin_ashi"
+      }
+    }
+  ]
+}

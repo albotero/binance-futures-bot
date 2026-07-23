@@ -1,0 +1,48 @@
+{
+  "name": "trend_aggressive_breakout",
+  "threshold": 0.52,
+  "description": "Aggressive momentum/breakout profile for fast entries. Higher trade frequency and noise sensitivity.",
+  "rules": [
+    {
+      "name": "ema_cross",
+      "enabled": true,
+      "weight": 1.05,
+      "params": {
+        "fast_period": 5,
+        "slow_period": 13,
+        "candle_style": "raw"
+      }
+    },
+    {
+      "name": "macd",
+      "enabled": true,
+      "weight": 1.1,
+      "params": {
+        "fast_period": 8,
+        "slow_period": 21,
+        "signal_period": 5,
+        "candle_style": "raw"
+      }
+    },
+    {
+      "name": "adx",
+      "enabled": true,
+      "weight": 0.55,
+      "params": {
+        "period": 10,
+        "threshold": 16,
+        "candle_style": "raw"
+      }
+    },
+    {
+      "name": "bollinger",
+      "enabled": true,
+      "weight": 0.5,
+      "params": {
+        "period": 20,
+        "std_dev": 2.0,
+        "candle_style": "raw"
+      }
+    }
+  ]
+}

@@ -5,7 +5,7 @@ import time
 
 import uvicorn
 
-from .backtest import compare_profiles, run_backtest_suite, save_backtest_report
+from .backtest import compare_profiles, prefetch_backtest_cache, run_backtest_suite, save_backtest_report
 from .api import build_app
 from .config import default_strategy_profile, load_bot_config, load_strategy_profile, save_strategy_profile
 from .engine import TradingEngine
@@ -38,6 +38,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--duration",
         default=None,
         help="Backtest duration such as 4w, 6mo, 1y, or 1y6mo",
+    )
+
+    warm_parser = subparsers.add_parser(
+        "warm-backtest-cache", help="Download and cache backtest candles for faster subsequent runs")
+    warm_parser.add_argument(
+        "--symbol", action="append", dest="symbols", help="Symbol to include in cache warm")
+    warm_parser.add_argument(
+        "--all-symbols",
+        action="store_true",
+        help="Warm cache for all available symbols of BOT_QUOTE_ASSET",
+    )
+    warm_parser.add_argument(
+        "--duration",
+        default=None,
+        help="Duration such as 4w, 6mo, 1y, or 1y6mo",
+    )
+
+    subparsers.add_parser(
+        "sync-exchange-history",
+        help="Backfill local trade history from Binance user-trade fills",
     )
 
     return parser
@@ -80,7 +100,29 @@ def main() -> None:
             print(f"{item.profile_name}: pnl={item.net_pnl:.2f} win_rate={item.win_rate:.1f}% drawdown={item.max_drawdown:.1f}%")
         return
 
+    if args.command == "warm-backtest-cache":
+        if args.duration:
+            config.backtest_duration = args.duration
+        selected_symbols = [symbol.upper()
+                            for symbol in (args.symbols or config.symbols)]
+        result = prefetch_backtest_cache(
+            config,
+            symbols=None if args.all_symbols else selected_symbols,
+            all_symbols=args.all_symbols,
+        )
+        print(
+            f"Backtest cache ready: symbols={result['symbols']} loaded={result['loaded']} fetched={result['fetched']}"
+        )
+        return
+
     engine = TradingEngine(config)
+
+    if args.command == "sync-exchange-history":
+        result = engine.sync_exchange_history()
+        print(
+            f"Exchange history sync complete: trades={result['trades']} updated={result['updated']}"
+        )
+        return
 
     if args.command == "run-bot":
         engine.start()

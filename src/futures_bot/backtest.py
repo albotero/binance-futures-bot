@@ -163,12 +163,16 @@ def run_backtest(
     symbol_results: dict[str, BacktestSymbolReport | str] = {}
 
     def run_symbol(symbol: str) -> BacktestSymbolReport:
-        candles = fetch_backtest_candles(
-            market_data,
-            symbol,
-            config.interval,
-            config.backtest_duration,
-        )
+        candles = _load_backtest_candles_cache(config, symbol)
+        if candles is None:
+            candles = fetch_backtest_candles(
+                market_data,
+                symbol,
+                config.interval,
+                config.backtest_duration,
+                max_candles=config.backtest_max_candles,
+            )
+            _store_backtest_candles_cache(config, symbol, candles)
         if not candles:
             raise ValueError("No candles returned")
         return _run_symbol_backtest(config, profile, symbol, candles, allocation)
@@ -327,6 +331,7 @@ def fetch_backtest_candles(
     symbol: str,
     interval: str,
     duration: str,
+    max_candles: int = 0,
 ) -> list[dict[str, float]]:
     interval_ms = _interval_to_milliseconds(interval)
     duration_delta = parse_backtest_duration(duration)
@@ -364,7 +369,99 @@ def fetch_backtest_candles(
         if cursor > end_ms or len(batch) < max_limit:
             break
 
+    if max_candles > 0 and len(candles) > max_candles:
+        return candles[-max_candles:]
     return candles
+
+
+def prefetch_backtest_cache(
+    config: BotConfig,
+    symbols: list[str] | None = None,
+    all_symbols: bool = False,
+) -> dict[str, int]:
+    market_data = BinanceMarketData(
+        config.api_key, config.api_secret, config.binance_base_url)
+    selected_symbols = resolve_backtest_symbols(
+        config, market_data, symbols=symbols, all_symbols=all_symbols)
+
+    loaded = 0
+    fetched = 0
+    for symbol in selected_symbols:
+        cached = _load_backtest_candles_cache(config, symbol)
+        if cached is not None and cached:
+            loaded += 1
+            continue
+        candles = fetch_backtest_candles(
+            market_data,
+            symbol,
+            config.interval,
+            config.backtest_duration,
+            max_candles=config.backtest_max_candles,
+        )
+        _store_backtest_candles_cache(config, symbol, candles)
+        fetched += 1
+
+    return {"symbols": len(selected_symbols), "loaded": loaded, "fetched": fetched}
+
+
+def _cache_key(config: BotConfig, symbol: str) -> str:
+    normalized = [
+        symbol.upper(),
+        config.interval,
+        config.backtest_duration,
+        str(config.backtest_max_candles or 0),
+        str(config.candle_style),
+    ]
+    return "__".join(normalized).replace("/", "_")
+
+
+def _cache_path(config: BotConfig, symbol: str) -> Path:
+    root = resolve_path(config.backtest_cache_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    return root / f"{_cache_key(config, symbol)}.json"
+
+
+def _load_backtest_candles_cache(config: BotConfig, symbol: str) -> list[dict[str, float]] | None:
+    if not config.backtest_cache_enabled:
+        return None
+    path = _cache_path(config, symbol)
+    if not path.exists():
+        return None
+
+    try:
+        payload = json.loads(path.read_text())
+    except Exception:  # noqa: BLE001
+        return None
+
+    created_at = payload.get("created_at")
+    if config.backtest_cache_ttl_hours > 0 and isinstance(created_at, str):
+        try:
+            created = datetime.fromisoformat(created_at)
+        except ValueError:
+            return None
+        age = datetime.now(timezone.utc) - created
+        if age > timedelta(hours=config.backtest_cache_ttl_hours):
+            return None
+
+    candles = payload.get("candles")
+    if not isinstance(candles, list):
+        return None
+    return candles
+
+
+def _store_backtest_candles_cache(config: BotConfig, symbol: str, candles: list[dict[str, float]]) -> None:
+    if not config.backtest_cache_enabled:
+        return
+    path = _cache_path(config, symbol)
+    payload = {
+        "created_at": utcstamp(),
+        "symbol": symbol,
+        "interval": config.interval,
+        "duration": config.backtest_duration,
+        "max_candles": config.backtest_max_candles,
+        "candles": candles,
+    }
+    path.write_text(json.dumps(payload, sort_keys=True))
 
 
 def _interval_to_milliseconds(interval: str) -> int:
@@ -412,15 +509,21 @@ def _run_symbol_backtest(
     execution = PaperExecution(
         initial_equity=start_equity,
         trailing_stop_pct=config.trailing_stop_pct,
+        trailing_stage_enabled=config.trailing_stage_enabled,
+        trailing_break_even_r=config.trailing_break_even_r,
+        trailing_activation_r=config.trailing_activation_r,
+        trailing_fee_buffer_pct=config.trailing_fee_buffer_pct,
     )
     trades: list[BacktestTrade] = []
     equity_curve: list[float] = [start_equity]
     peak_equity = start_equity
     max_drawdown = 0.0
     warmup = min(max(30, _profile_warmup(profile)), max(len(candles) - 1, 0))
+    eval_window = max(config.backtest_eval_window, warmup + 5)
 
     for index in range(warmup, len(candles)):
-        window = candles[: index + 1]
+        start = max(0, index + 1 - eval_window)
+        window = candles[start: index + 1]
         current_price = float(window[-1]["close"])
         execution.mark_price(symbol, current_price)
         evaluation = evaluate_profile(
@@ -506,7 +609,13 @@ def _open_backtest_position(
     if len(execution.list_positions()) >= config.max_open_positions:
         return
 
-    equity = max(execution.snapshot().equity, 1.0)
+    snapshot = execution.snapshot()
+    equity = max(snapshot.equity, 1.0)
+    max_margin_in_use = equity * (1 - config.min_margin_buffer_pct / 100)
+    if snapshot.margin_in_use > max_margin_in_use:
+        return
+
+    available_margin = max(max_margin_in_use - snapshot.margin_in_use, 0.0)
     risk_amount = equity * (config.risk_per_trade_pct / 100)
     exit_plan = evaluation.exit_plan if evaluation else None
     stop_distance = abs(
@@ -517,8 +626,11 @@ def _open_backtest_position(
     notional = quantity * current_price
     leverage = min(config.leverage, config.max_leverage)
     max_notional = equity * (config.max_position_pct / 100) * leverage
+    available_notional = available_margin * leverage
     if max_notional > 0:
         quantity = min(quantity, max_notional / max(current_price, 1e-9))
+    if available_notional > 0:
+        quantity = min(quantity, available_notional / max(current_price, 1e-9))
     if quantity <= 0:
         return
 
@@ -546,6 +658,11 @@ def _open_backtest_position(
         stop_loss_price=stop_loss_price,
         take_profit_price=take_profit_price,
         trailing_stop_price=trailing_stop_price,
+        trailing_stage_enabled=config.trailing_stage_enabled,
+        trailing_break_even_r=config.trailing_break_even_r,
+        trailing_activation_r=config.trailing_activation_r,
+        trailing_fee_buffer_pct=config.trailing_fee_buffer_pct,
+        initial_stop_loss_price=stop_loss_price,
     )
     execution.open_position(position)
 

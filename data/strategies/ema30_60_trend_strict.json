@@ -1,0 +1,28 @@
+{
+  "name": "ema30_60_trend_strict",
+  "threshold": 0.9,
+  "description": "EMA 30/60 cross with MACD trend confirmation.",
+  "rules": [
+    {
+      "name": "ema_cross",
+      "enabled": true,
+      "weight": 1.15,
+      "params": {
+        "fast_period": 30,
+        "slow_period": 60,
+        "candle_style": "heikin_ashi"
+      }
+    },
+    {
+      "name": "macd",
+      "enabled": true,
+      "weight": 1.0,
+      "params": {
+        "fast_period": 12,
+        "slow_period": 26,
+        "signal_period": 9,
+        "candle_style": "raw"
+      }
+    }
+  ]
+}

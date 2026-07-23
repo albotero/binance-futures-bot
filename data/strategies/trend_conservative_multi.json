@@ -1,0 +1,38 @@
+{
+  "name": "trend_conservative_multi",
+  "threshold": 0.88,
+  "description": "Conservative trend-following profile for cleaner entries. Strong confirmation from EMA, MACD and ADX.",
+  "rules": [
+    {
+      "name": "ema_cross",
+      "enabled": true,
+      "weight": 1.3,
+      "params": {
+        "fast_period": 9,
+        "slow_period": 34,
+        "candle_style": "heikin_ashi"
+      }
+    },
+    {
+      "name": "macd",
+      "enabled": true,
+      "weight": 1.0,
+      "params": {
+        "fast_period": 12,
+        "slow_period": 26,
+        "signal_period": 9,
+        "candle_style": "heikin_ashi"
+      }
+    },
+    {
+      "name": "adx",
+      "enabled": true,
+      "weight": 0.9,
+      "params": {
+        "period": 14,
+        "threshold": 24,
+        "candle_style": "heikin_ashi"
+      }
+    }
+  ]
+}

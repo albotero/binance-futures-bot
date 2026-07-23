@@ -6,11 +6,23 @@ from typing import Any
 
 from .execution import BaseExecution
 from .market_data import BinanceFuturesRESTClient
-from .models import Position, Side, TradeStatus
+from .models import Position, Side, TradeStatus, iso
 
 
 BINANCE_TRAILING_CALLBACK_MIN = 0.1
 BINANCE_TRAILING_CALLBACK_MAX = 5.0
+
+
+@dataclass(slots=True)
+class ExchangeFillSummary:
+    symbol: str
+    order_id: int
+    side: str
+    quantity: float
+    average_price: float
+    realized_pnl: float
+    fill_time_ms: int
+    fill_time: str
 
 
 @dataclass(slots=True)
@@ -43,11 +55,18 @@ class BinanceFuturesExecution(BaseExecution):
             quantity=self._format_quantity(position.symbol, position.quantity),
             newOrderRespType="RESULT",
         )
-        fill_price = self._filled_price_from_order(
+        order_id = _extract_order_id(order)
+        fill = self._exchange_fill_for_order(
             position.symbol,
-            order,
+            order_id,
+            order_payload=order,
             fallback_price=position.entry_price,
         )
+        fill_price = fill.average_price if fill else self._exchange_reference_price(
+            position.symbol)
+        position.entry_order_id = order_id
+        if fill and fill.fill_time:
+            position.opened_at = fill.fill_time
         position.entry_price = fill_price
         position.mark(fill_price)
         self._realign_protective_prices(
@@ -81,24 +100,101 @@ class BinanceFuturesExecution(BaseExecution):
             reduceOnly=True,
             newOrderRespType="RESULT",
         )
-        fill_price = self._filled_price_from_order(
+        order_id = _extract_order_id(order)
+        fill = self._exchange_fill_for_order(
             symbol,
-            order,
+            order_id,
+            order_payload=order,
             fallback_price=price,
         )
+        fill_price = fill.average_price if fill else self._exchange_reference_price(
+            symbol)
         self._cancel_protective_orders(symbol)
+        self._cancel_exchange_algo_orders(symbol)
         self.positions.pop(symbol, None)
-        position.mark(fill_price)
+        position.exit_order_id = order_id
+        if fill and fill.fill_time:
+            position.updated_at = fill.fill_time
+        self._finalize_closed_position(
+            position,
+            exit_price=fill_price,
+            reason=reason or TradeStatus.CLOSED.value,
+        )
+        return position
+
+    def close_position_from_exchange(
+        self,
+        symbol: str,
+        price: float,
+        reason: str = "",
+        *,
+        fill_time: str | None = None,
+        order_id: int | None = None,
+    ) -> Position | None:
+        position = self.positions.get(symbol)
+        if not position:
+            return None
+        self._cancel_protective_orders(symbol)
+        self._cancel_exchange_algo_orders(symbol)
+        self.positions.pop(symbol, None)
+        position.exit_order_id = order_id
+        if fill_time:
+            position.updated_at = fill_time
+        self._finalize_closed_position(
+            position,
+            exit_price=price,
+            reason=reason or TradeStatus.CLOSED.value,
+        )
+        return position
+
+    def exchange_position_snapshot(self, symbol: str) -> tuple[float, float]:
+        try:
+            rows = self.client.futures_position_risk(symbol)
+        except Exception:  # noqa: BLE001
+            return 0.0, 0.0
+        for item in rows:
+            if str(item.get("symbol", "")).upper() != symbol.upper():
+                continue
+            qty = _safe_float(item.get("positionAmt"))
+            mark_price = _safe_float(item.get("markPrice"))
+            return qty, mark_price
+        return 0.0, 0.0
+
+    def exchange_fill_history(self, symbol: str, *, start_time_ms: int | None = None) -> list[ExchangeFillSummary]:
+        try:
+            rows = self.client.futures_user_trades(
+                symbol,
+                limit=1000,
+                start_time=start_time_ms,
+            )
+        except AttributeError:
+            rows = []
+        return _group_exchange_fills(rows)
+
+    def find_exchange_trade_fills(
+        self,
+        symbol: str,
+        *,
+        trade_side: str,
+        quantity: float,
+        opened_at: str,
+    ) -> tuple[ExchangeFillSummary | None, ExchangeFillSummary | None]:
+        start_ms = _iso_to_ms(opened_at)
+        fills = self.exchange_fill_history(symbol, start_time_ms=start_ms)
+        return _match_trade_to_fills(fills, trade_side=trade_side, quantity=quantity, opened_at_ms=start_ms)
+
+    def _finalize_closed_position(self, position: Position, exit_price: float, reason: str) -> float:
+        position.mark(exit_price)
         if position.side == Side.LONG:
-            pnl = (fill_price - position.entry_price) * position.quantity
+            pnl = (exit_price - position.entry_price) * position.quantity
         else:
-            pnl = (position.entry_price - fill_price) * position.quantity
+            pnl = (position.entry_price - exit_price) * position.quantity
         position.realized_pnl = pnl
-        position.status = TradeStatus(reason or TradeStatus.CLOSED.value)
-        position.close_reason = reason or TradeStatus.CLOSED.value
+        position.status = TradeStatus(reason)
+        position.close_reason = reason
         self.realized_pnl += pnl
         self.balance += pnl
-        return position
+        return pnl
 
     def _filled_price_from_order(self, symbol: str, order: Any, fallback_price: float) -> float:
         direct = _extract_fill_price(order)
@@ -116,6 +212,54 @@ class BinanceFuturesExecution(BaseExecution):
         if resolved is not None and resolved > 0:
             return resolved
         return fallback_price
+
+    def _exchange_fill_for_order(
+        self,
+        symbol: str,
+        order_id: int | None,
+        *,
+        order_payload: Any,
+        fallback_price: float,
+    ) -> ExchangeFillSummary | None:
+        direct_price = _extract_fill_price(order_payload)
+        if direct_price is not None and direct_price > 0:
+            return ExchangeFillSummary(
+                symbol=symbol,
+                order_id=order_id or 0,
+                side="",
+                quantity=0.0,
+                average_price=direct_price,
+                realized_pnl=0.0,
+                fill_time_ms=0,
+                fill_time="",
+            )
+        if order_id is not None:
+            fills = self.exchange_fill_history(symbol)
+            for fill in fills:
+                if fill.order_id == order_id:
+                    return fill
+        fetched_price = self._filled_price_from_order(
+            symbol, {"orderId": order_id}, fallback_price)
+        if fetched_price <= 0:
+            fetched_price = self._exchange_reference_price(symbol)
+        if fetched_price <= 0:
+            return None
+        return ExchangeFillSummary(
+            symbol=symbol,
+            order_id=order_id or 0,
+            side="",
+            quantity=0.0,
+            average_price=fetched_price,
+            realized_pnl=0.0,
+            fill_time_ms=0,
+            fill_time="",
+        )
+
+    def _exchange_reference_price(self, symbol: str) -> float:
+        try:
+            return float(self.client.futures_symbol_ticker(symbol=symbol).get("price") or 0.0)
+        except Exception:  # noqa: BLE001
+            return 0.0
 
     def _place_protective_orders(self, position: Position) -> list[int]:
         close_side = "SELL" if position.side == Side.LONG else "BUY"
@@ -154,7 +298,7 @@ class BinanceFuturesExecution(BaseExecution):
 
         trailing_order: dict[str, Any] | None = None
         callback_rate = _trailing_callback_rate(position)
-        if callback_rate is not None:
+        if callback_rate is not None and not position.trailing_stage_enabled:
             try:
                 trailing_order = self.client.futures_place_algo_order(
                     algoType="CONDITIONAL",
@@ -217,9 +361,24 @@ class BinanceFuturesExecution(BaseExecution):
         for order_id in order_ids:
             try:
                 self.client.futures_cancel_algo_order(
-                    symbol=symbol, order_id=order_id)
+                    symbol=symbol, algo_id=order_id)
             except Exception:  # noqa: BLE001
                 # Orders may already be filled/canceled at exchange side.
+                continue
+
+    def _cancel_exchange_algo_orders(self, symbol: str) -> None:
+        try:
+            open_orders = self.client.futures_open_algo_orders(symbol)
+        except Exception:  # noqa: BLE001
+            return
+        for order in open_orders:
+            order_id = _extract_order_id(order)
+            if order_id is None:
+                continue
+            try:
+                self.client.futures_cancel_algo_order(
+                    symbol=symbol, algo_id=order_id)
+            except Exception:  # noqa: BLE001
                 continue
 
     def _emergency_flatten(self, position: Position) -> None:
@@ -374,3 +533,111 @@ def _as_positive_float(raw: Any) -> float | None:
     if value <= 0:
         return None
     return value
+
+
+def _safe_float(raw: Any) -> float:
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _group_exchange_fills(rows: list[dict[str, Any]]) -> list[ExchangeFillSummary]:
+    grouped: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        order_id = _extract_order_id(row)
+        if order_id is None:
+            continue
+        item = grouped.setdefault(
+            order_id,
+            {
+                "symbol": str(row.get("symbol", "")).upper(),
+                "side": "BUY" if bool(row.get("buyer")) else "SELL",
+                "quantity": 0.0,
+                "quote_qty": 0.0,
+                "realized_pnl": 0.0,
+                "fill_time_ms": 0,
+            },
+        )
+        item["quantity"] += _safe_float(row.get("qty"))
+        item["quote_qty"] += _safe_float(row.get("quoteQty"))
+        item["realized_pnl"] += _safe_float(row.get("realizedPnl"))
+        item["fill_time_ms"] = max(
+            item["fill_time_ms"], int(row.get("time") or 0))
+
+    summaries: list[ExchangeFillSummary] = []
+    for order_id, item in grouped.items():
+        quantity = float(item["quantity"])
+        average_price = float(item["quote_qty"]) / \
+            quantity if quantity > 0 else 0.0
+        fill_time_ms = int(item["fill_time_ms"])
+        summaries.append(
+            ExchangeFillSummary(
+                symbol=str(item["symbol"]),
+                order_id=order_id,
+                side=str(item["side"]),
+                quantity=quantity,
+                average_price=average_price,
+                realized_pnl=float(item["realized_pnl"]),
+                fill_time_ms=fill_time_ms,
+                fill_time=iso(_ms_to_utc(fill_time_ms)
+                              ) if fill_time_ms > 0 else "",
+            )
+        )
+    summaries.sort(key=lambda item: (item.fill_time_ms, item.order_id))
+    return summaries
+
+
+def _match_trade_to_fills(
+    fills: list[ExchangeFillSummary],
+    *,
+    trade_side: str,
+    quantity: float,
+    opened_at_ms: int,
+) -> tuple[ExchangeFillSummary | None, ExchangeFillSummary | None]:
+    entry_side = "BUY" if trade_side.upper() == Side.LONG.value else "SELL"
+    exit_side = "SELL" if entry_side == "BUY" else "BUY"
+    qty_tolerance = max(quantity * 0.05, 0.00001)
+
+    entry_fill: ExchangeFillSummary | None = None
+    for fill in fills:
+        if fill.side != entry_side:
+            continue
+        if abs(fill.quantity - quantity) > qty_tolerance:
+            continue
+        if fill.fill_time_ms + 60_000 < opened_at_ms:
+            continue
+        entry_fill = fill
+        break
+
+    exit_fill: ExchangeFillSummary | None = None
+    if entry_fill is not None:
+        for fill in fills:
+            if fill.order_id == entry_fill.order_id:
+                continue
+            if fill.side != exit_side:
+                continue
+            if abs(fill.quantity - quantity) > qty_tolerance:
+                continue
+            if fill.fill_time_ms < entry_fill.fill_time_ms:
+                continue
+            exit_fill = fill
+            break
+
+    return entry_fill, exit_fill
+
+
+def _iso_to_ms(raw: str) -> int:
+    return int(_dt_from_iso(raw).timestamp() * 1000)
+
+
+def _dt_from_iso(raw: str):
+    from datetime import datetime
+
+    return datetime.fromisoformat(raw)
+
+
+def _ms_to_utc(value: int):
+    from datetime import datetime, timezone
+
+    return datetime.fromtimestamp(value / 1000, tz=timezone.utc)

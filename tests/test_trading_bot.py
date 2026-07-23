@@ -5,10 +5,10 @@ from futures_bot.strategies.engine import StrategyEvaluation, evaluate_profile
 from futures_bot.strategies.builtins import AdxStrategy, BollingerStrategy, EmaCrossStrategy, MacdStrategy, RsiReversionStrategy, heikin_ashi
 from futures_bot.models import BotConfig, Position, Side, StrategyProfile, StrategyRule, TradeStatus
 from futures_bot.execution_paper import PaperExecution
-from futures_bot.execution_live import BinanceFuturesExecution
+from futures_bot.execution_live import BinanceFuturesExecution, _group_exchange_fills, _match_trade_to_fills
 from futures_bot.engine import TradingEngine
 from futures_bot.config import default_strategy_profile
-from futures_bot.backtest import BacktestReport, BacktestSymbolReport, BacktestSuiteResult, compare_profiles, parse_backtest_duration, run_backtest_suite
+from futures_bot.backtest import BacktestReport, BacktestSymbolReport, BacktestSuiteResult, _open_backtest_position, compare_profiles, fetch_backtest_candles, parse_backtest_duration, run_backtest_suite
 
 import tempfile
 import unittest
@@ -269,6 +269,41 @@ class EngineTransitionTests(unittest.TestCase):
         self.assertIsNotNone(after)
         self.assertGreater(after.trailing_stop_price, before_trailing)
 
+    def test_staged_trailing_arms_after_activation_and_moves_to_break_even(self) -> None:
+        position = Position(
+            symbol="BTCUSDT",
+            side=Side.LONG,
+            quantity=1.0,
+            entry_price=100.0,
+            current_price=100.0,
+            leverage=2,
+            strategy="test",
+            stop_loss_price=95.0,
+            take_profit_price=110.0,
+            trailing_stop_price=0.0,
+            trailing_stage_enabled=True,
+            trailing_break_even_r=0.8,
+            trailing_activation_r=1.2,
+            trailing_fee_buffer_pct=0.04,
+            initial_stop_loss_price=95.0,
+        )
+
+        position.mark(101.0)
+        position.update_trailing_stop(2.2)
+        self.assertFalse(position.trailing_armed)
+        self.assertFalse(position.break_even_applied)
+
+        position.mark(104.0)
+        position.update_trailing_stop(2.2)
+        self.assertFalse(position.trailing_armed)
+        self.assertTrue(position.break_even_applied)
+        self.assertAlmostEqual(position.stop_loss_price, 100.04, places=6)
+
+        position.mark(106.0)
+        position.update_trailing_stop(2.2)
+        self.assertTrue(position.trailing_armed)
+        self.assertGreater(position.trailing_stop_price, 0.0)
+
     def test_manual_close_updates_metrics_and_snapshot(self) -> None:
         self.engine._open_from_signal("BTCUSDT", 100.0, "long", None)
 
@@ -314,6 +349,130 @@ class BacktestTests(unittest.TestCase):
     def test_parse_backtest_duration_supports_long_ranges(self) -> None:
         duration = parse_backtest_duration("1y6mo2w")
         self.assertEqual(duration.days, 365 + 180 + 14)
+
+    def test_fetch_backtest_candles_respects_max_candles(self) -> None:
+        class FakeMarketData:
+            def fetch_candles(
+                self,
+                symbol: str,
+                interval: str,
+                limit: int = 200,
+                start_time: int | None = None,
+                end_time: int | None = None,
+            ) -> list[dict[str, float]]:
+                return [
+                    {
+                        "open_time": float(index),
+                        "open": 100.0,
+                        "high": 101.0,
+                        "low": 99.0,
+                        "close": 100.0,
+                        "volume": 10.0,
+                        "close_time": float(index + 1),
+                    }
+                    for index in range(10)
+                ]
+
+        candles = fetch_backtest_candles(
+            FakeMarketData(),
+            "BTCUSDT",
+            "5m",
+            "1d",
+            max_candles=4,
+        )
+
+        self.assertEqual(len(candles), 4)
+        self.assertEqual(candles[0]["open_time"], 6.0)
+
+    def test_backtest_uses_bounded_evaluation_window(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = BotConfig(
+                mode="paper",
+                initial_equity=1000.0,
+                data_dir=str(Path(temp_dir) / "data"),
+                db_path=str(Path(temp_dir) / "bot.db"),
+                symbols=["BTCUSDT"],
+                backtest_duration="4w",
+                backtest_eval_window=120,
+            )
+            profile = default_strategy_profile()
+            candles = make_candles(
+                [100.0 + index * 0.1 for index in range(450)])
+            observed_windows: list[int] = []
+
+            def fake_eval(*args: object, **kwargs: object) -> StrategyEvaluation:
+                observed_windows.append(len(args[1]))
+                return StrategyEvaluation(
+                    score=0.0,
+                    action="hold",
+                    reasons=[],
+                    signals=[],
+                    exit_plan=None,
+                )
+
+            with patch("futures_bot.backtest.fetch_backtest_candles", return_value=candles):
+                with patch("futures_bot.backtest.evaluate_profile", side_effect=fake_eval):
+                    run_backtest_suite(config, [profile], ["BTCUSDT"])
+
+            self.assertTrue(observed_windows)
+            self.assertLessEqual(max(observed_windows), 120)
+
+    def test_backtest_position_sizing_respects_available_margin_with_leverage(self) -> None:
+        config = BotConfig(
+            mode="paper",
+            initial_equity=1000.0,
+            leverage=10,
+            max_leverage=10,
+            max_position_pct=100.0,
+            min_margin_buffer_pct=25.0,
+            risk_per_trade_pct=5.0,
+            allow_short=True,
+        )
+        execution = PaperExecution(initial_equity=config.initial_equity)
+        profile = StrategyProfile(name="test")
+        evaluation = StrategyEvaluation(
+            score=1.0,
+            action="long",
+            reasons=["trend"],
+            signals=[],
+            exit_plan=type("Plan", (), {
+                "stop_loss_price": 99.0,
+                "take_profit_price": 103.0,
+                "trailing_stop_price": 99.5,
+            })(),
+        )
+
+        _open_backtest_position(
+            config,
+            execution,
+            profile,
+            "BTCUSDT",
+            100.0,
+            "long",
+            evaluation,
+        )
+        _open_backtest_position(
+            config,
+            execution,
+            profile,
+            "ETHUSDT",
+            100.0,
+            "long",
+            evaluation,
+        )
+
+        first = execution.get_position("BTCUSDT")
+        second = execution.get_position("ETHUSDT")
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
+        assert first is not None
+        assert second is not None
+
+        self.assertAlmostEqual(first.quantity, 50.0, places=6)
+        self.assertAlmostEqual(second.quantity, 25.0, places=6)
+
+        snapshot = execution.snapshot()
+        self.assertLessEqual(snapshot.margin_in_use, 750.0 + 1e-6)
 
     def test_backtest_suite_runs_single_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -364,7 +523,13 @@ class BacktestTests(unittest.TestCase):
             profile = default_strategy_profile()
             candles = make_candles([float(index) for index in range(1, 90)])
 
-            def fake_fetch(_market_data: object, symbol: str, interval: str, duration: str) -> list[dict[str, float]]:
+            def fake_fetch(
+                _market_data: object,
+                symbol: str,
+                interval: str,
+                duration: str,
+                max_candles: int = 0,
+            ) -> list[dict[str, float]]:
                 if symbol == "BADUSDT":
                     raise ValueError("symbol not available")
                 return candles
@@ -607,6 +772,41 @@ class BacktestTests(unittest.TestCase):
 
 
 class LiveExecutionTests(unittest.TestCase):
+    def test_group_exchange_fills_builds_weighted_average_by_order(self) -> None:
+        fills = _group_exchange_fills([
+            {"symbol": "NEOUSDC", "orderId": 10, "buyer": True, "qty": "2",
+                "quoteQty": "4", "realizedPnl": "0", "time": 1000},
+            {"symbol": "NEOUSDC", "orderId": 10, "buyer": True, "qty": "1",
+                "quoteQty": "2.1", "realizedPnl": "0", "time": 1000},
+        ])
+
+        self.assertEqual(len(fills), 1)
+        self.assertEqual(fills[0].order_id, 10)
+        self.assertAlmostEqual(fills[0].quantity, 3.0, places=8)
+        self.assertAlmostEqual(fills[0].average_price, 2.0333333333, places=8)
+
+    def test_match_trade_to_fills_uses_entry_then_first_opposite_exit(self) -> None:
+        fills = _group_exchange_fills([
+            {"symbol": "NEOUSDC", "orderId": 10, "buyer": True, "qty": "3",
+                "quoteQty": "6", "realizedPnl": "0", "time": 2_000},
+            {"symbol": "NEOUSDC", "orderId": 11, "buyer": False, "qty": "3",
+                "quoteQty": "6.3", "realizedPnl": "0.3", "time": 3_000},
+            {"symbol": "NEOUSDC", "orderId": 12, "buyer": False, "qty": "3",
+                "quoteQty": "6.6", "realizedPnl": "0.6", "time": 4_000},
+        ])
+
+        entry_fill, exit_fill = _match_trade_to_fills(
+            fills,
+            trade_side=Side.LONG.value,
+            quantity=3.0,
+            opened_at_ms=1_500,
+        )
+
+        self.assertIsNotNone(entry_fill)
+        self.assertIsNotNone(exit_fill)
+        self.assertEqual(entry_fill.order_id, 10)
+        self.assertEqual(exit_fill.order_id, 11)
+
     def test_local_only_mode_skips_exchange_protective_orders(self) -> None:
         execution = BinanceFuturesExecution(
             initial_equity=1000.0,
@@ -634,8 +834,11 @@ class LiveExecutionTests(unittest.TestCase):
                 self.algo_orders.append(params)
                 return {"algoId": 999}
 
-            def futures_cancel_algo_order(self, symbol: str, order_id: int) -> dict:
-                return {"symbol": symbol, "algoId": order_id}
+            def futures_cancel_algo_order(self, symbol: str, algo_id: int) -> dict:
+                return {"symbol": symbol, "algoId": algo_id}
+
+            def futures_open_algo_orders(self, symbol: str) -> list[dict]:
+                return []
 
             def futures_get_order(self, symbol: str, order_id: int) -> dict:
                 return {"symbol": symbol, "orderId": order_id, "avgPrice": "0", "executedQty": "0", "cumQuote": "0"}
@@ -695,9 +898,12 @@ class LiveExecutionTests(unittest.TestCase):
                     return {"algoId": 103}
                 return {"algoId": 199}
 
-            def futures_cancel_algo_order(self, symbol: str, order_id: int) -> dict:
-                self.canceled.append((symbol, order_id))
-                return {"symbol": symbol, "algoId": order_id}
+            def futures_cancel_algo_order(self, symbol: str, algo_id: int) -> dict:
+                self.canceled.append((symbol, algo_id))
+                return {"symbol": symbol, "algoId": algo_id}
+
+            def futures_open_algo_orders(self, symbol: str) -> list[dict]:
+                return []
 
             def futures_get_order(self, symbol: str, order_id: int) -> dict:
                 return {"symbol": symbol, "orderId": order_id, "avgPrice": "0", "executedQty": "0", "cumQuote": "0"}
@@ -780,9 +986,12 @@ class LiveExecutionTests(unittest.TestCase):
                     return {"algoId": 203}
                 return {"algoId": 299}
 
-            def futures_cancel_algo_order(self, symbol: str, order_id: int) -> dict:
-                self.canceled.append((symbol, order_id))
-                return {"symbol": symbol, "algoId": order_id}
+            def futures_cancel_algo_order(self, symbol: str, algo_id: int) -> dict:
+                self.canceled.append((symbol, algo_id))
+                return {"symbol": symbol, "algoId": algo_id}
+
+            def futures_open_algo_orders(self, symbol: str) -> list[dict]:
+                return []
 
             def futures_get_order(self, symbol: str, order_id: int) -> dict:
                 return {"symbol": symbol, "orderId": order_id, "avgPrice": "0", "executedQty": "0", "cumQuote": "0"}
@@ -842,8 +1051,11 @@ class LiveExecutionTests(unittest.TestCase):
                     return {"algoId": 303}
                 return {"algoId": 300}
 
-            def futures_cancel_algo_order(self, symbol: str, order_id: int) -> dict:
-                return {"symbol": symbol, "algoId": order_id}
+            def futures_cancel_algo_order(self, symbol: str, algo_id: int) -> dict:
+                return {"symbol": symbol, "algoId": algo_id}
+
+            def futures_open_algo_orders(self, symbol: str) -> list[dict]:
+                return []
 
             def futures_get_order(self, symbol: str, order_id: int) -> dict:
                 return {"symbol": symbol, "orderId": order_id, "avgPrice": "0", "executedQty": "0", "cumQuote": "0"}
@@ -870,6 +1082,65 @@ class LiveExecutionTests(unittest.TestCase):
             item for item in fake_client.algo_orders if item.get("type") == "TRAILING_STOP_MARKET"
         )
         self.assertEqual(trailing_order.get("callbackRate"), 5.0)
+
+    def test_staged_trailing_skips_exchange_trailing_order(self) -> None:
+        execution = BinanceFuturesExecution(initial_equity=1000.0)
+
+        class FakeClient:
+            def __init__(self) -> None:
+                self.orders: list[dict] = []
+                self.algo_orders: list[dict] = []
+
+            def futures_change_leverage(self, symbol: str, leverage: int) -> dict:
+                return {"symbol": symbol, "leverage": leverage}
+
+            def futures_create_order(self, **params: dict) -> dict:
+                self.orders.append(params)
+                return {"orderId": 320, "avgPrice": "100.0"}
+
+            def futures_place_algo_order(self, **params: dict) -> dict:
+                self.algo_orders.append(params)
+                if params.get("type") == "STOP_MARKET":
+                    return {"algoId": 321}
+                if params.get("type") == "TAKE_PROFIT_MARKET":
+                    return {"algoId": 322}
+                if params.get("type") == "TRAILING_STOP_MARKET":
+                    return {"algoId": 323}
+                return {"algoId": 399}
+
+            def futures_cancel_algo_order(self, symbol: str, algo_id: int) -> dict:
+                return {"symbol": symbol, "algoId": algo_id}
+
+            def futures_open_algo_orders(self, symbol: str) -> list[dict]:
+                return []
+
+            def futures_get_order(self, symbol: str, order_id: int) -> dict:
+                return {"symbol": symbol, "orderId": order_id, "avgPrice": "0", "executedQty": "0", "cumQuote": "0"}
+
+        fake_client = FakeClient()
+        execution.client = fake_client  # type: ignore[assignment]
+
+        execution.open_position(
+            Position(
+                symbol="ETHUSDT",
+                side=Side.LONG,
+                quantity=0.01,
+                entry_price=100.0,
+                current_price=100.0,
+                leverage=3,
+                strategy="test",
+                stop_loss_price=95.0,
+                take_profit_price=110.0,
+                trailing_stop_price=96.0,
+                trailing_stage_enabled=True,
+                initial_stop_loss_price=95.0,
+            )
+        )
+
+        algo_types = [item.get("type") for item in fake_client.algo_orders]
+        self.assertIn("STOP_MARKET", algo_types)
+        self.assertIn("TAKE_PROFIT_MARKET", algo_types)
+        self.assertNotIn("TRAILING_STOP_MARKET", algo_types)
 
     def test_live_orders_use_symbol_tick_and_step_filters(self) -> None:
         execution = BinanceFuturesExecution(initial_equity=1000.0)
@@ -915,8 +1186,11 @@ class LiveExecutionTests(unittest.TestCase):
                     return {"algoId": 403}
                 return {"algoId": 499}
 
-            def futures_cancel_algo_order(self, symbol: str, order_id: int) -> dict:
-                return {"symbol": symbol, "algoId": order_id}
+            def futures_cancel_algo_order(self, symbol: str, algo_id: int) -> dict:
+                return {"symbol": symbol, "algoId": algo_id}
+
+            def futures_open_algo_orders(self, symbol: str) -> list[dict]:
+                return []
 
             def futures_get_order(self, symbol: str, order_id: int) -> dict:
                 return {"symbol": symbol, "orderId": order_id, "avgPrice": "0", "executedQty": "0", "cumQuote": "0"}
@@ -986,8 +1260,11 @@ class LiveExecutionTests(unittest.TestCase):
                     return {"algoId": 503}
                 return {"algoId": 599}
 
-            def futures_cancel_algo_order(self, symbol: str, order_id: int) -> dict:
-                return {"symbol": symbol, "algoId": order_id}
+            def futures_cancel_algo_order(self, symbol: str, algo_id: int) -> dict:
+                return {"symbol": symbol, "algoId": algo_id}
+
+            def futures_open_algo_orders(self, symbol: str) -> list[dict]:
+                return []
 
             def futures_get_order(self, symbol: str, order_id: int) -> dict:
                 return {"symbol": symbol, "orderId": order_id, "avgPrice": "0", "executedQty": "0", "cumQuote": "0"}
@@ -1014,6 +1291,115 @@ class LiveExecutionTests(unittest.TestCase):
             item for item in fake_client.orders if item.get("type") == "MARKET" and item.get("side") == "BUY"
         )
         self.assertEqual(entry_order.get("quantity"), 0.01234)
+
+    def test_external_close_cancels_all_remaining_algo_orders(self) -> None:
+        execution = BinanceFuturesExecution(initial_equity=1000.0)
+
+        class FakeClient:
+            def __init__(self) -> None:
+                self.orders: list[dict] = []
+                self.algo_orders: list[dict] = []
+                self.canceled: list[int] = []
+
+            def futures_change_leverage(self, symbol: str, leverage: int) -> dict:
+                return {"symbol": symbol, "leverage": leverage}
+
+            def futures_create_order(self, **params: dict) -> dict:
+                self.orders.append(params)
+                return {"orderId": 800, "avgPrice": "100.0"}
+
+            def futures_place_algo_order(self, **params: dict) -> dict:
+                self.algo_orders.append(params)
+                if params.get("type") == "STOP_MARKET":
+                    return {"algoId": 801}
+                if params.get("type") == "TAKE_PROFIT_MARKET":
+                    return {"algoId": 802}
+                if params.get("type") == "TRAILING_STOP_MARKET":
+                    return {"algoId": 803}
+                return {"algoId": 899}
+
+            def futures_cancel_algo_order(self, symbol: str, algo_id: int) -> dict:
+                self.canceled.append(algo_id)
+                return {"symbol": symbol, "algoId": algo_id}
+
+            def futures_open_algo_orders(self, symbol: str) -> list[dict]:
+                return [{"algoId": 901}, {"algoId": 902}]
+
+            def futures_get_order(self, symbol: str, order_id: int) -> dict:
+                return {"symbol": symbol, "orderId": order_id, "avgPrice": "0", "executedQty": "0", "cumQuote": "0"}
+
+        fake_client = FakeClient()
+        execution.client = fake_client  # type: ignore[assignment]
+
+        execution.open_position(
+            Position(
+                symbol="BTCUSDT",
+                side=Side.LONG,
+                quantity=0.01,
+                entry_price=100.0,
+                current_price=100.0,
+                leverage=3,
+                strategy="test",
+                stop_loss_price=95.0,
+                take_profit_price=110.0,
+                trailing_stop_price=96.0,
+            )
+        )
+        closed = execution.close_position_from_exchange(
+            "BTCUSDT", 101.0, TradeStatus.EXTERNAL_CLOSE.value)
+        self.assertIsNotNone(closed)
+        self.assertEqual(closed.status, TradeStatus.EXTERNAL_CLOSE)
+        self.assertEqual(sorted(fake_client.canceled),
+                         [801, 802, 803, 901, 902])
+
+
+class LiveEngineReconciliationTests(unittest.TestCase):
+    def test_reconcile_marks_stale_open_trade_as_external_close(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "bot.db"
+            config = BotConfig(
+                mode="live",
+                initial_equity=1000.0,
+                db_path=str(db_path),
+                data_dir=str(Path(temp_dir) / "data"),
+                live_trading_confirmed=True,
+                symbols=["BTCUSDT"],
+            )
+            engine = TradingEngine(config)
+
+            class FakeClient:
+                def futures_position_risk(self, symbol: str | None = None) -> list[dict]:
+                    return [{"symbol": symbol or "BTCUSDT", "positionAmt": "0", "markPrice": "101.0"}]
+
+                def futures_open_algo_orders(self, symbol: str) -> list[dict]:
+                    return []
+
+            engine.execution.client = FakeClient()  # type: ignore[assignment]
+
+            engine.storage.record_open(
+                Position(
+                    symbol="BTCUSDT",
+                    side=Side.LONG,
+                    quantity=1.0,
+                    entry_price=100.0,
+                    current_price=100.0,
+                    leverage=2,
+                    strategy="test",
+                    stop_loss_price=98.0,
+                    take_profit_price=104.0,
+                    trailing_stop_price=99.0,
+                )
+            )
+
+            engine._reconcile_exchange_positions(["BTCUSDT"])
+
+            open_trades = engine.storage.list_open_trades()
+            self.assertEqual(open_trades, [])
+            latest = engine.storage.list_trades(limit=1)[0]
+            self.assertEqual(latest["status"],
+                             TradeStatus.EXTERNAL_CLOSE.value)
+            self.assertAlmostEqual(
+                float(latest["realized_pnl"]), 1.0, places=8)
 
 
 if __name__ == "__main__":

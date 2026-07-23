@@ -1,263 +1,199 @@
 # Futures Bot
 
-Binance futures trading bot with:
+Binance USDT/USDC-margined futures trading bot with live trading, paper trading, local dashboards, cached backtests, and SQLite trade history.
 
-- Paper mode and live mode
-- Dashboard + API controls
-- Weighted multi-strategy profiles
-- Backtesting and strategy comparison
-- SQLite storage for trades and equity snapshots
+This project is tooling, not financial advice.
 
-This project is for education and automation tooling. It is not financial advice.
+## What It Does
 
-## Safety First
+- Runs live or paper futures trades from strategy profiles in `data/strategies`
+- Places live TP/SL protection with Binance algo orders when enabled
+- Reconciles exchange state back into the local DB
+- Backfills stored trade history from Binance user-trade fills for more accurate entry/exit prices
+- Caches backtest candle history locally so repeated parameter tests are much faster
 
-Futures are high risk. A bad configuration can lose capital quickly.
+## Safety
 
 Before live trading:
 
-1. Run in paper mode first.
-2. Test your profile with backtests.
-3. Prefer Binance testnet before mainnet.
-4. Use conservative leverage and risk-per-trade.
+1. Run paper mode first.
+2. Warm candle cache and backtest repeatedly.
+3. Use Binance testnet before mainnet if possible.
+4. Keep leverage and risk per trade conservative until the profile is stable.
 
-Live protection is enforced in code. Real orders require:
+Mainnet live mode requires:
 
-- BOT_MODE=live
-- valid BINANCE_API_KEY and BINANCE_API_SECRET
-- BOT_LIVE_TRADING_CONFIRMED=true, or BINANCE_TESTNET=true
+- `BOT_MODE=live`
+- valid `BINANCE_API_KEY`
+- valid `BINANCE_API_SECRET`
+- `BOT_LIVE_TRADING_CONFIRMED=true`
 
-Protective exits in live mode are placed through Binance algo-order endpoints, not the regular futures order endpoint.
-
-## Features
-
-- Strategy engine with weighted scoring and thresholds
-- Built-in indicators:
-  - EMA cross
-  - MACD (cross + momentum tendency)
-  - RSI
-  - Bollinger Bands
-  - ADX
-- Candle styles:
-  - raw
-  - heikin_ashi
-- Dynamic exit planning (support/resistance + volatility)
-- Risk-reward target via BOT_RISK_REWARD_RATIO
-- Leverage-aware position sizing caps
-- Manual close, pause/resume, run-once controls
-- Backtest reports saved to data/reports
-
-## Requirements
-
-- Linux/macOS/WSL
-- Python 3.10+
-- Binance Futures account for live/testnet usage
-
-## Installation
-
-### 1) Clone and enter the project
-
-```bash
-git clone <your-repo-url>
-cd binance-futures-bot
-```
-
-### 2) Create and activate virtual environment
+## Setup
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-```
-
-### 3) Install dependencies
-
-Use either method:
-
-```bash
 pip install -r requirements.txt
-```
-
-or
-
-```bash
-pip install -e .
-```
-
-### 4) Configure environment
-
-```bash
 cp .env.example .env
 ```
 
-Edit .env with your preferred settings.
+Edit `.env` before running live commands.
 
-## Quick Start
+## Main Commands
 
-### Start dashboard and API
+Run dashboard:
 
 ```bash
 futures-bot run-web
 ```
 
-Open:
-
-- http://127.0.0.1:8000
-
-### Run engine only (no dashboard)
+Run engine only:
 
 ```bash
 futures-bot run-bot
 ```
 
-### One-time strategy seed (default profile)
+Seed default strategy:
 
 ```bash
 futures-bot seed-strategy
 ```
 
-## Commands
-
-### Run web dashboard
+Run backtest:
 
 ```bash
-futures-bot run-web
+futures-bot backtest --profile ema7_20_trend_strict --symbol BTCUSDC --symbol ETHUSDC
 ```
 
-### Run bot loop in terminal
+Warm 12-week candle cache once:
 
 ```bash
-futures-bot run-bot
+futures-bot warm-backtest-cache --duration 12w
 ```
 
-### Run backtest for a saved profile
+Backfill local trade history from Binance fills:
 
 ```bash
-futures-bot backtest --profile trend_balanced_multi --symbol BTCUSDT --symbol ETHUSDT
+futures-bot sync-exchange-history
 ```
 
-### Compare built-in strategies in one run
+## Backtest Workflow
 
-```bash
-futures-bot backtest --compare ema_cross macd rsi adx --symbol BTCUSDT
-```
+Recommended loop:
 
-Backtest output is saved under data/reports as JSON.
+1. Warm cache once with `warm-backtest-cache --duration 12w`
+2. Tune profile JSON and `.env`
+3. Re-run `futures-bot backtest ...`
+4. Compare reports in `data/reports`
 
-## Environment Configuration
+Cached candles are stored under `data/cache/backtest_candles` by default.
 
-Core variables:
+## Live Price Accuracy
 
-- BINANCE_API_KEY
-- BINANCE_API_SECRET
-- BOT_MODE (paper or live)
-- BOT_SYMBOLS (comma-separated)
-- BOT_ALLOW_SHORT
-- BOT_TRADE_ALL_SYMBOLS
-- BOT_CANDLE_STYLE
-- BOT_STRATEGY_PROFILE
-- BOT_INTERVAL (example: 1m, 5m, 15m, 1h)
-- BOT_CANDLES_LIMIT
-- BOT_INITIAL_EQUITY
-- BOT_QUOTE_ASSET
-- BOT_POLL_SECONDS
+For live mode:
 
-Risk and sizing:
+- entries use Binance order fills, not local candle closes
+- closes use Binance order fills, not local chart prices
+- external/manual exchange closes are reconciled from Binance user-trade history when available
+- `sync-exchange-history` can backfill historical rows in `data/bot.db`
 
-- BOT_RISK_PER_TRADE_PCT
-- BOT_RISK_REWARD_RATIO
-- BOT_LEVERAGE
-- BOT_MAX_LEVERAGE
-- BOT_MAX_OPEN_POSITIONS
-- BOT_MAX_POSITION_PCT
-- BOT_STOP_LOSS_PCT
-- BOT_TAKE_PROFIT_PCT
-- BOT_MAX_DAILY_LOSS_PCT
-- BOT_MIN_MARGIN_BUFFER_PCT
-- BOT_TRAILING_STOP_PCT
+## Important Environment Variables
+
+Core:
+
+- `BOT_MODE`
+- `BOT_SYMBOLS`
+- `BOT_TRADE_ALL_SYMBOLS`
+- `BOT_QUOTE_ASSET`
+- `BOT_STRATEGY_PROFILE`
+- `BOT_INTERVAL`
+- `BOT_CANDLES_LIMIT`
+- `BOT_INITIAL_EQUITY`
+
+Risk and execution:
+
+- `BOT_RISK_PER_TRADE_PCT`
+- `BOT_RISK_REWARD_RATIO`
+- `BOT_LEVERAGE`
+- `BOT_MAX_LEVERAGE`
+- `BOT_MAX_OPEN_POSITIONS`
+- `BOT_MAX_POSITION_PCT`
+- `BOT_STOP_LOSS_PCT`
+- `BOT_TAKE_PROFIT_PCT`
+- `BOT_TRAILING_STOP_PCT`
+
+Two-stage trailing:
+
+- `BOT_TRAILING_STAGE_ENABLED`
+- `BOT_TRAILING_BREAK_EVEN_R`
+- `BOT_TRAILING_ACTIVATION_R`
+- `BOT_TRAILING_FEE_BUFFER_PCT`
+
+Backtest speed:
+
+- `BOT_BACKTEST_DURATION`
+- `BOT_BACKTEST_MAX_CANDLES`
+- `BOT_BACKTEST_EVAL_WINDOW`
+- `BOT_BACKTEST_CACHE_ENABLED`
+- `BOT_BACKTEST_CACHE_TTL_HOURS`
+- `BOT_BACKTEST_CACHE_DIR`
 
 Live safety:
 
-- BOT_LIVE_TRADING_CONFIRMED
-- BINANCE_TESTNET
-- BINANCE_BASE_URL (optional override)
-- BINANCE_TESTNET_URL (optional override)
+- `BOT_LIVE_TRADING_CONFIRMED`
+- `BINANCE_TESTNET`
+- `BINANCE_BASE_URL`
+- `BINANCE_TESTNET_URL`
+- `BOT_LIVE_PROTECTION_MODE`
 
 Storage:
 
-- BOT_DATA_DIR (default: data)
-- BOT_DB_PATH (default: data/bot.db)
+- `BOT_DATA_DIR`
+- `BOT_DB_PATH`
 
-### Suggested safe baseline
+## Strategy Files
 
-For first real tests:
+Profiles live in `data/strategies/*.json`.
 
-- BOT_MODE=paper
-- BOT_LEVERAGE=2 to 5
-- BOT_RISK_PER_TRADE_PCT=0.5 to 1.0
-- BOT_MAX_OPEN_POSITIONS=1 to 3
-- BOT_MAX_POSITION_PCT=10 to 20
+Each rule uses one of:
 
-## Dashboard Guide
+- `ema_cross`
+- `macd`
+- `rsi`
+- `bollinger`
+- `adx`
 
-From the web UI you can:
+Each profile sets:
 
-- Start / stop engine
-- Pause / resume loop
-- Run one cycle on demand
-- Save and load strategy profiles
-- Run backtests with interval, candle limit, leverage controls
-- See active positions, scores, reasons, and account metrics
-- View persisted history chart from DB snapshots
+- `threshold`
+- `description`
+- weighted `rules`
 
-## API Reference
+## API Endpoints
 
-Main endpoints:
+Main API endpoints:
 
-- GET /api/status
-- GET /api/trades?limit=200
-- GET /api/history?limit=2000
-- GET /api/exchange
-- POST /api/start
-- POST /api/stop
-- POST /api/pause
-- POST /api/resume
-- POST /api/run-once
-- POST /api/trades/{symbol}/close
-- GET /api/strategies
-- POST /api/strategies/save
-- POST /api/strategies/load/{name}
-- POST /api/backtest/run
+- `GET /api/status`
+- `GET /api/trades`
+- `GET /api/history`
+- `GET /api/exchange`
+- `POST /api/start`
+- `POST /api/stop`
+- `POST /api/pause`
+- `POST /api/resume`
+- `POST /api/run-once`
+- `POST /api/trades/{symbol}/close`
+- `GET /api/strategies`
+- `POST /api/strategies/save`
+- `POST /api/strategies/load/{name}`
+- `POST /api/backtest/run`
 
-Example backtest payload:
+## Files You Will Use Most
 
-```json
-{
-  "profile": "trend_balanced_multi",
-  "symbols": ["BTCUSDT", "ETHUSDT"],
-  "interval": "5m",
-  "candles_limit": 1000,
-  "leverage": 5,
-  "compare": []
-}
-```
-
-## Strategy Profiles
-
-Profiles are JSON files in data/strategies.
-
-Each profile has:
-
-- name
-- threshold
-- description
-- rules[]
-
-Each rule has:
-
-- name: ema_cross | macd | rsi | bollinger | adx
-- enabled: true/false
-- weight: numeric influence
-- params: indicator-specific parameters
+- `data/strategies/` for profile tuning
+- `data/reports/` for backtest outputs
+- `data/cache/backtest_candles/` for cached candle history
+- `data/bot.db` for persisted trade and snapshot history
 
 ### Scoring model
 

@@ -19,6 +19,45 @@ const formatMoney = (value) =>
   )
 const formatNumber = (value, digits = 2) => Number(value || 0).toFixed(digits)
 
+function priceDigits(value) {
+  const numeric = Math.abs(Number(value || 0))
+  if (!Number.isFinite(numeric) || numeric === 0) {
+    return 2
+  }
+  if (numeric >= 10000) {
+    return 0
+  }
+  if (numeric >= 1000) {
+    return 1
+  }
+  if (numeric >= 100) {
+    return 2
+  }
+  if (numeric >= 1) {
+    return 3
+  }
+  if (numeric >= 0.1) {
+    return 4
+  }
+  if (numeric >= 0.01) {
+    return 5
+  }
+  if (numeric >= 0.001) {
+    return 6
+  }
+  return 8
+}
+
+function formatPrice(value) {
+  const numeric = Number(value || 0)
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 0,
+    maximumFractionDigits: priceDigits(numeric),
+  }).format(numeric)
+}
+
 function parseApiError(message) {
   try {
     const payload = JSON.parse(message)
@@ -129,7 +168,7 @@ function renderExchangeOverview(data) {
   }
   const prices = Object.entries(data.latest_prices || {})
     .map(
-      ([symbol, price]) => `<div class="pill">${symbol}: ${price == null ? "unavailable" : formatMoney(price)}</div>`,
+      ([symbol, price]) => `<div class="pill">${symbol}: ${price == null ? "unavailable" : formatPrice(price)}</div>`,
     )
     .join("")
 
@@ -318,10 +357,10 @@ function renderPositions(positions) {
               <td>${position.symbol}</td>
               <td>${position.side}</td>
               <td>${formatNumber(position.quantity, 4)}</td>
-              <td>${formatMoney(position.entry_price)}</td>
-              <td>${formatMoney(position.current_price)}</td>
-              <td>${position.stop_loss_price != null ? formatMoney(position.stop_loss_price) : "-"}</td>
-              <td>${position.take_profit_price != null ? formatMoney(position.take_profit_price) : "-"}</td>
+              <td>${formatPrice(position.entry_price)}</td>
+              <td>${formatPrice(position.current_price)}</td>
+              <td>${position.stop_loss_price != null ? formatPrice(position.stop_loss_price) : "-"}</td>
+              <td>${position.take_profit_price != null ? formatPrice(position.take_profit_price) : "-"}</td>
               <td class="${position.unrealized_pnl >= 0 ? "positive" : "negative"}">${formatMoney(position.unrealized_pnl)}</td>
               <td><button class="danger" data-close-symbol="${position.symbol}">Close</button></td>
             </tr>
@@ -356,8 +395,8 @@ function renderTrades(trades) {
               <td>${formatUtcHuman(trade.closed_at || trade.opened_at)}</td>
               <td>${trade.symbol}</td>
               <td>${trade.side}</td>
-              <td>${trade.stop_loss_price != null ? formatMoney(trade.stop_loss_price) : "-"}</td>
-              <td>${trade.take_profit_price != null ? formatMoney(trade.take_profit_price) : "-"}</td>
+              <td>${trade.stop_loss_price != null ? formatPrice(trade.stop_loss_price) : "-"}</td>
+              <td>${trade.take_profit_price != null ? formatPrice(trade.take_profit_price) : "-"}</td>
               <td>${trade.status}</td>
               <td class="${Number(trade.realized_pnl || 0) >= 0 ? "positive" : "negative"}">${formatMoney(trade.realized_pnl)}</td>
             </tr>

@@ -1,0 +1,38 @@
+{
+  "name": "ema7_20_adx_balanced",
+  "threshold": 0.72,
+  "description": "EMA 7/20 trend profile with MACD momentum and ADX trend-strength filter. Less strict than ema7_50_trend_strict.",
+  "rules": [
+    {
+      "name": "ema_cross",
+      "enabled": true,
+      "weight": 1.2,
+      "params": {
+        "fast_period": 7,
+        "slow_period": 20,
+        "candle_style": "heikin_ashi"
+      }
+    },
+    {
+      "name": "macd",
+      "enabled": true,
+      "weight": 1.0,
+      "params": {
+        "fast_period": 12,
+        "slow_period": 26,
+        "signal_period": 9,
+        "candle_style": "heikin_ashi"
+      }
+    },
+    {
+      "name": "adx",
+      "enabled": true,
+      "weight": 0.75,
+      "params": {
+        "period": 14,
+        "threshold": 20,
+        "candle_style": "heikin_ashi"
+      }
+    }
+  ]
+}

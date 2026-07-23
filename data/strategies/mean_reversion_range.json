@@ -1,0 +1,48 @@
+{
+  "name": "mean_reversion_range",
+  "threshold": 0.6,
+  "description": "Range and pullback profile for sideways markets using RSI and Bollinger with light EMA direction context.",
+  "rules": [
+    {
+      "name": "rsi",
+      "enabled": true,
+      "weight": 1.2,
+      "params": {
+        "period": 14,
+        "oversold": 28,
+        "overbought": 72,
+        "candle_style": "raw"
+      }
+    },
+    {
+      "name": "bollinger",
+      "enabled": true,
+      "weight": 1.0,
+      "params": {
+        "period": 20,
+        "std_dev": 2.2,
+        "candle_style": "raw"
+      }
+    },
+    {
+      "name": "ema_cross",
+      "enabled": true,
+      "weight": 0.45,
+      "params": {
+        "fast_period": 9,
+        "slow_period": 21,
+        "candle_style": "raw"
+      }
+    },
+    {
+      "name": "adx",
+      "enabled": true,
+      "weight": 0.35,
+      "params": {
+        "period": 14,
+        "threshold": 26,
+        "candle_style": "raw"
+      }
+    }
+  ]
+}

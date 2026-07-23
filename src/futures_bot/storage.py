@@ -67,6 +67,9 @@ class SQLiteStore:
                     f"ALTER TABLE trades ADD COLUMN {name} {column_type}")
 
     def record_open(self, position: Position, metadata: dict[str, Any] | None = None) -> int:
+        payload = dict(metadata or {})
+        if position.entry_order_id is not None:
+            payload["entry_order_id"] = position.entry_order_id
         with self.connection() as conn:
             cursor = conn.execute(
                 """
@@ -87,23 +90,32 @@ class SQLiteStore:
                     position.trailing_stop_price,
                     position.status.value,
                     position.opened_at,
-                    json.dumps(metadata or {}, sort_keys=True),
+                    json.dumps(payload, sort_keys=True),
                 ),
             )
             return int(cursor.lastrowid)
 
     def record_close(self, position: Position) -> None:
         with self.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT id, metadata FROM trades
+                WHERE symbol = ? AND closed_at IS NULL
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (position.symbol,),
+            ).fetchone()
+            metadata = self._parse_metadata(row["metadata"] if row else None)
+            if position.entry_order_id is not None:
+                metadata["entry_order_id"] = position.entry_order_id
+            if position.exit_order_id is not None:
+                metadata["exit_order_id"] = position.exit_order_id
             conn.execute(
                 """
                 UPDATE trades
-                SET exit_price = ?, realized_pnl = ?, status = ?, close_reason = ?, closed_at = ?
-                WHERE id = (
-                    SELECT id FROM trades
-                    WHERE symbol = ? AND closed_at IS NULL
-                    ORDER BY id DESC
-                    LIMIT 1
-                )
+                SET exit_price = ?, realized_pnl = ?, status = ?, close_reason = ?, closed_at = ?, metadata = ?
+                WHERE id = ?
                 """,
                 (
                     position.current_price,
@@ -111,7 +123,8 @@ class SQLiteStore:
                     position.status.value,
                     position.close_reason,
                     position.updated_at,
-                    position.symbol,
+                    json.dumps(metadata, sort_keys=True),
+                    int(row["id"]) if row else -1,
                 ),
             )
 
@@ -120,6 +133,84 @@ class SQLiteStore:
             rows = conn.execute(
                 "SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         return [dict(row) for row in rows]
+
+    def list_open_trades(self) -> list[dict[str, Any]]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM trades WHERE closed_at IS NULL ORDER BY id ASC"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_all_trades(self) -> list[dict[str, Any]]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM trades ORDER BY symbol ASC, opened_at ASC, id ASC"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def close_trade_by_id(
+        self,
+        trade_id: int,
+        *,
+        exit_price: float,
+        realized_pnl: float,
+        status: str,
+        close_reason: str,
+        closed_at: str,
+    ) -> None:
+        with self.connection() as conn:
+            conn.execute(
+                """
+                UPDATE trades
+                SET exit_price = ?, realized_pnl = ?, status = ?, close_reason = ?, closed_at = ?
+                WHERE id = ? AND closed_at IS NULL
+                """,
+                (
+                    exit_price,
+                    realized_pnl,
+                    status,
+                    close_reason,
+                    closed_at,
+                    trade_id,
+                ),
+            )
+
+    def update_trade_from_exchange(
+        self,
+        trade_id: int,
+        *,
+        entry_price: float | None = None,
+        exit_price: float | None = None,
+        realized_pnl: float | None = None,
+        opened_at: str | None = None,
+        closed_at: str | None = None,
+        metadata_updates: dict[str, Any] | None = None,
+    ) -> None:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM trades WHERE id = ?",
+                (trade_id,),
+            ).fetchone()
+            if not row:
+                return
+            metadata = self._parse_metadata(row["metadata"])
+            metadata.update(metadata_updates or {})
+            conn.execute(
+                """
+                UPDATE trades
+                SET entry_price = ?, exit_price = ?, realized_pnl = ?, opened_at = ?, closed_at = ?, metadata = ?
+                WHERE id = ?
+                """,
+                (
+                    row["entry_price"] if entry_price is None else entry_price,
+                    row["exit_price"] if exit_price is None else exit_price,
+                    row["realized_pnl"] if realized_pnl is None else realized_pnl,
+                    row["opened_at"] if opened_at is None else opened_at,
+                    row["closed_at"] if closed_at is None else closed_at,
+                    json.dumps(metadata, sort_keys=True),
+                    trade_id,
+                ),
+            )
 
     def total_realized_pnl(self) -> float:
         with self.connection() as conn:
@@ -150,3 +241,13 @@ class SQLiteStore:
                 "INSERT INTO snapshots (created_at, payload) VALUES (?, ?)",
                 (payload.get("created_at"), json.dumps(payload, sort_keys=True)),
             )
+
+    @staticmethod
+    def _parse_metadata(raw: Any) -> dict[str, Any]:
+        if not raw:
+            return {}
+        try:
+            payload = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}

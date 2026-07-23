@@ -41,6 +41,16 @@ def load_bot_config() -> BotConfig:
         "BOT_LIVE_PROTECTION_MODE", config.live_protection_mode).strip().lower() or config.live_protection_mode
     config.backtest_duration = os.getenv(
         "BOT_BACKTEST_DURATION", config.backtest_duration).strip() or config.backtest_duration
+    config.backtest_max_candles = _read_int(
+        "BOT_BACKTEST_MAX_CANDLES", config.backtest_max_candles)
+    config.backtest_eval_window = _read_int(
+        "BOT_BACKTEST_EVAL_WINDOW", config.backtest_eval_window)
+    config.backtest_cache_enabled = _read_bool(
+        "BOT_BACKTEST_CACHE_ENABLED", config.backtest_cache_enabled)
+    config.backtest_cache_ttl_hours = _read_float(
+        "BOT_BACKTEST_CACHE_TTL_HOURS", config.backtest_cache_ttl_hours)
+    config.backtest_cache_dir = os.getenv(
+        "BOT_BACKTEST_CACHE_DIR", config.backtest_cache_dir)
     config.candle_style = os.getenv("BOT_CANDLE_STYLE", config.candle_style)
     config.interval = os.getenv("BOT_INTERVAL", config.interval)
     config.candles_limit = _read_int("BOT_CANDLES_LIMIT", config.candles_limit)
@@ -60,6 +70,14 @@ def load_bot_config() -> BotConfig:
         "BOT_TAKE_PROFIT_PCT", config.take_profit_pct)
     config.trailing_stop_pct = _read_float(
         "BOT_TRAILING_STOP_PCT", config.trailing_stop_pct)
+    config.trailing_stage_enabled = _read_bool(
+        "BOT_TRAILING_STAGE_ENABLED", config.trailing_stage_enabled)
+    config.trailing_break_even_r = _read_float(
+        "BOT_TRAILING_BREAK_EVEN_R", config.trailing_break_even_r)
+    config.trailing_activation_r = _read_float(
+        "BOT_TRAILING_ACTIVATION_R", config.trailing_activation_r)
+    config.trailing_fee_buffer_pct = _read_float(
+        "BOT_TRAILING_FEE_BUFFER_PCT", config.trailing_fee_buffer_pct)
     config.max_daily_loss_pct = _read_float(
         "BOT_MAX_DAILY_LOSS_PCT", config.max_daily_loss_pct)
     config.min_margin_buffer_pct = _read_float(

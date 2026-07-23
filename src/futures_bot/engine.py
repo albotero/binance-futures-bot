@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -65,6 +66,10 @@ class TradingEngine:
             return BinanceFuturesExecution(
                 initial_equity=config.initial_equity,
                 trailing_stop_pct=config.trailing_stop_pct,
+                trailing_stage_enabled=config.trailing_stage_enabled,
+                trailing_break_even_r=config.trailing_break_even_r,
+                trailing_activation_r=config.trailing_activation_r,
+                trailing_fee_buffer_pct=config.trailing_fee_buffer_pct,
                 api_key=config.api_key,
                 api_secret=config.api_secret,
                 base_url=config.binance_base_url,
@@ -73,6 +78,10 @@ class TradingEngine:
         return PaperExecution(
             initial_equity=config.initial_equity,
             trailing_stop_pct=config.trailing_stop_pct,
+            trailing_stage_enabled=config.trailing_stage_enabled,
+            trailing_break_even_r=config.trailing_break_even_r,
+            trailing_activation_r=config.trailing_activation_r,
+            trailing_fee_buffer_pct=config.trailing_fee_buffer_pct,
         )
 
     def _validate_mode(self) -> None:
@@ -158,6 +167,80 @@ class TradingEngine:
     def snapshot(self) -> DashboardMetrics:
         return self.execution.snapshot()
 
+    def sync_exchange_history(self) -> dict[str, int]:
+        if self.config.mode.lower() != "live":
+            return {"trades": 0, "updated": 0}
+        if not isinstance(self.execution, BinanceFuturesExecution):
+            return {"trades": 0, "updated": 0}
+
+        updated = 0
+        trades = self.storage.list_all_trades()
+        grouped: dict[str, list[dict]] = {}
+        for trade in trades:
+            grouped.setdefault(
+                str(trade.get("symbol", "")).upper(), []).append(trade)
+
+        for symbol, symbol_trades in grouped.items():
+            if not symbol:
+                continue
+            first_opened = str(symbol_trades[0].get("opened_at") or "")
+            if not first_opened:
+                continue
+            fills = self.execution.exchange_fill_history(
+                symbol,
+                start_time_ms=_iso_to_ms(first_opened),
+            )
+            used_order_ids: set[int] = set()
+            for trade in symbol_trades:
+                metadata = _parse_trade_metadata(trade.get("metadata"))
+                entry_fill, exit_fill = _match_trade_fills_for_history(
+                    fills,
+                    trade_side=str(trade.get("side", "")),
+                    quantity=float(trade.get("quantity") or 0.0),
+                    opened_at=str(trade.get("opened_at") or ""),
+                    used_order_ids=used_order_ids,
+                    entry_order_id=metadata.get("entry_order_id"),
+                    exit_order_id=metadata.get("exit_order_id"),
+                )
+                updates: dict[str, object] = {}
+                metadata_updates: dict[str, object] = {}
+                if entry_fill is not None:
+                    updates["entry_price"] = entry_fill.average_price
+                    updates["opened_at"] = entry_fill.fill_time
+                    metadata_updates["entry_order_id"] = entry_fill.order_id
+                    used_order_ids.add(entry_fill.order_id)
+                if exit_fill is not None:
+                    updates["exit_price"] = exit_fill.average_price
+                    updates["closed_at"] = exit_fill.fill_time
+                    updates["realized_pnl"] = _estimate_realized_pnl(
+                        side=str(trade.get("side", "")),
+                        quantity=float(trade.get("quantity") or 0.0),
+                        entry_price=float(updates.get(
+                            "entry_price", trade.get("entry_price") or 0.0)),
+                        exit_price=exit_fill.average_price,
+                    )
+                    metadata_updates["exit_order_id"] = exit_fill.order_id
+                    used_order_ids.add(exit_fill.order_id)
+                if updates or metadata_updates:
+                    self.storage.update_trade_from_exchange(
+                        int(trade["id"]),
+                        entry_price=updates.get(
+                            "entry_price") if "entry_price" in updates else None,
+                        exit_price=updates.get(
+                            "exit_price") if "exit_price" in updates else None,
+                        realized_pnl=updates.get(
+                            "realized_pnl") if "realized_pnl" in updates else None,
+                        opened_at=updates.get(
+                            "opened_at") if "opened_at" in updates else None,
+                        closed_at=updates.get(
+                            "closed_at") if "closed_at" in updates else None,
+                        metadata_updates=metadata_updates,
+                    )
+                    updated += 1
+
+        self._restore_account_metrics()
+        return {"trades": len(trades), "updated": updated}
+
     def run_once(self) -> None:
         with self._lock:
             symbols = self.list_symbols()
@@ -166,6 +249,8 @@ class TradingEngine:
             self.state.latest_actions.clear()
             self.state.latest_scores.clear()
             self.state.latest_reasons.clear()
+
+            self._reconcile_exchange_positions(symbols)
 
             for symbol in symbols:
                 if symbol in self.state.halted_symbols:
@@ -185,6 +270,69 @@ class TradingEngine:
                     self.state.last_error = f"{symbol}: {exc}"
 
             self._record_snapshot(self.state.last_run_at)
+
+    def _reconcile_exchange_positions(self, active_symbols: list[str]) -> None:
+        if self.config.mode.lower() != "live":
+            return
+        if not isinstance(self.execution, BinanceFuturesExecution):
+            return
+
+        open_trades = self.storage.list_open_trades()
+        if not open_trades:
+            return
+
+        snapshots: dict[str, tuple[float, float]] = {}
+        for trade in open_trades:
+            symbol = str(trade.get("symbol", "")).upper()
+            if not symbol:
+                continue
+            if symbol not in snapshots:
+                snapshots[symbol] = self.execution.exchange_position_snapshot(
+                    symbol)
+            position_qty, exchange_mark_price = snapshots[symbol]
+            if abs(position_qty) > 1e-10:
+                continue
+
+            entry_fill, exit_fill = self.execution.find_exchange_trade_fills(
+                symbol,
+                trade_side=str(trade.get("side", "")),
+                quantity=float(trade.get("quantity") or 0.0),
+                opened_at=str(trade.get("opened_at") or utcnow().isoformat()),
+            )
+
+            exit_price = exit_fill.average_price if exit_fill else exchange_mark_price
+            if exit_price <= 0:
+                exit_price = float(trade.get("entry_price") or 0.0)
+
+            local_position = self.execution.get_position(symbol)
+            if local_position:
+                closed = self.execution.close_position_from_exchange(
+                    symbol,
+                    exit_price,
+                    TradeStatus.EXTERNAL_CLOSE.value,
+                    fill_time=exit_fill.fill_time if exit_fill else None,
+                    order_id=exit_fill.order_id if exit_fill else None,
+                )
+                if closed:
+                    self.storage.record_close(closed)
+                    continue
+
+            realized_pnl = _estimate_realized_pnl(
+                side=str(trade.get("side", "")).upper(),
+                quantity=float(trade.get("quantity") or 0.0),
+                entry_price=float(trade.get("entry_price") or exit_price),
+                exit_price=exit_price,
+            )
+            self.storage.close_trade_by_id(
+                int(trade["id"]),
+                exit_price=exit_price,
+                realized_pnl=realized_pnl,
+                status=TradeStatus.EXTERNAL_CLOSE.value,
+                close_reason=TradeStatus.EXTERNAL_CLOSE.value,
+                closed_at=exit_fill.fill_time if exit_fill else utcnow().isoformat(),
+            )
+            self.execution.realized_pnl += realized_pnl
+            self.execution.balance += realized_pnl
 
     def _restore_account_metrics(self) -> None:
         realized = self.storage.total_realized_pnl()
@@ -279,6 +427,11 @@ class TradingEngine:
             stop_loss_price=stop_loss_price,
             take_profit_price=take_profit_price,
             trailing_stop_price=trailing_stop_price,
+            trailing_stage_enabled=self.config.trailing_stage_enabled,
+            trailing_break_even_r=self.config.trailing_break_even_r,
+            trailing_activation_r=self.config.trailing_activation_r,
+            trailing_fee_buffer_pct=self.config.trailing_fee_buffer_pct,
+            initial_stop_loss_price=stop_loss_price,
         )
         opened = self.execution.open_position(position)
         self.storage.record_open(
@@ -293,3 +446,53 @@ class TradingEngine:
 
 def load_engine(config: BotConfig | None = None) -> TradingEngine:
     return TradingEngine(config or BotConfig())
+
+
+def _estimate_realized_pnl(side: str, quantity: float, entry_price: float, exit_price: float) -> float:
+    if side == Side.SHORT.value:
+        return (entry_price - exit_price) * quantity
+    return (exit_price - entry_price) * quantity
+
+
+def _parse_trade_metadata(raw: object) -> dict[str, object]:
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw) if isinstance(raw, str) else raw
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _match_trade_fills_for_history(
+    fills: list,
+    *,
+    trade_side: str,
+    quantity: float,
+    opened_at: str,
+    used_order_ids: set[int],
+    entry_order_id: object = None,
+    exit_order_id: object = None,
+):
+    from .execution_live import ExchangeFillSummary, _match_trade_to_fills
+
+    available = [fill for fill in fills if fill.order_id not in used_order_ids]
+    entry_fill, close_fill = _match_trade_to_fills(
+        available,
+        trade_side=trade_side,
+        quantity=quantity,
+        opened_at_ms=_iso_to_ms(opened_at),
+    )
+    if entry_order_id is not None:
+        entry_fill = next(
+            (fill for fill in fills if fill.order_id == int(entry_order_id)), entry_fill)
+    if exit_order_id is not None:
+        close_fill = next(
+            (fill for fill in fills if fill.order_id == int(exit_order_id)), close_fill)
+    return entry_fill, close_fill
+
+
+def _iso_to_ms(raw: str) -> int:
+    from datetime import datetime
+
+    return int(datetime.fromisoformat(raw).timestamp() * 1000)

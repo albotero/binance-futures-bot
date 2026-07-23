@@ -23,6 +23,7 @@ class TradeStatus(str, Enum):
     OPEN = "OPEN"
     CLOSED = "CLOSED"
     MANUAL_CLOSE = "MANUAL_CLOSE"
+    EXTERNAL_CLOSE = "EXTERNAL_CLOSE"
     STOP_LOSS = "STOP_LOSS"
     TAKE_PROFIT = "TAKE_PROFIT"
     TRAILING_STOP = "TRAILING_STOP"
@@ -86,6 +87,10 @@ class BotConfig:
     stop_loss_pct: float = 1.5
     take_profit_pct: float = 3.0
     trailing_stop_pct: float = 1.0
+    trailing_stage_enabled: bool = False
+    trailing_break_even_r: float = 0.8
+    trailing_activation_r: float = 1.2
+    trailing_fee_buffer_pct: float = 0.04
     max_daily_loss_pct: float = 5.0
     min_margin_buffer_pct: float = 25.0
     quote_asset: str = "USDT"
@@ -99,6 +104,11 @@ class BotConfig:
     live_trading_confirmed: bool = False
     api_key: str = ""
     api_secret: str = ""
+    backtest_max_candles: int = 0
+    backtest_eval_window: int = 320
+    backtest_cache_enabled: bool = True
+    backtest_cache_ttl_hours: float = 0.0
+    backtest_cache_dir: str = "data/cache/backtest_candles"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -155,6 +165,15 @@ class Position:
     stop_loss_price: float
     take_profit_price: float
     trailing_stop_price: float
+    entry_order_id: int | None = None
+    exit_order_id: int | None = None
+    trailing_stage_enabled: bool = False
+    trailing_break_even_r: float = 0.8
+    trailing_activation_r: float = 1.2
+    trailing_fee_buffer_pct: float = 0.04
+    initial_stop_loss_price: float = 0.0
+    trailing_armed: bool = False
+    break_even_applied: bool = False
     opened_at: str = field(default_factory=iso)
     updated_at: str = field(default_factory=iso)
     unrealized_pnl: float = 0.0
@@ -179,6 +198,64 @@ class Position:
     def update_trailing_stop(self, trailing_pct: float) -> None:
         if trailing_pct <= 0:
             return
+        if self.initial_stop_loss_price <= 0:
+            self.initial_stop_loss_price = self.stop_loss_price
+
+        if not self.trailing_stage_enabled:
+            self._update_trailing_legacy(trailing_pct)
+            return
+
+        risk_per_unit = abs(self.entry_price - self.initial_stop_loss_price)
+        if risk_per_unit <= 0:
+            self._update_trailing_legacy(trailing_pct)
+            return
+
+        if self.side == Side.LONG:
+            favorable_move = self.current_price - self.entry_price
+            r_multiple = favorable_move / risk_per_unit
+            if (not self.break_even_applied) and r_multiple >= self.trailing_break_even_r:
+                break_even_price = self.entry_price * \
+                    (1 + self.trailing_fee_buffer_pct / 100)
+                self.stop_loss_price = max(
+                    self.stop_loss_price, break_even_price)
+                self.break_even_applied = True
+
+            if r_multiple >= self.trailing_activation_r:
+                self.trailing_armed = True
+                candidate = self.current_price * (1 - trailing_pct / 100)
+                floor = self.stop_loss_price
+                if self.trailing_stop_price <= 0:
+                    self.trailing_stop_price = max(candidate, floor)
+                else:
+                    self.trailing_stop_price = max(
+                        self.trailing_stop_price,
+                        candidate,
+                        floor,
+                    )
+            return
+
+        favorable_move = self.entry_price - self.current_price
+        r_multiple = favorable_move / risk_per_unit
+        if (not self.break_even_applied) and r_multiple >= self.trailing_break_even_r:
+            break_even_price = self.entry_price * \
+                (1 - self.trailing_fee_buffer_pct / 100)
+            self.stop_loss_price = min(self.stop_loss_price, break_even_price)
+            self.break_even_applied = True
+
+        if r_multiple >= self.trailing_activation_r:
+            self.trailing_armed = True
+            candidate = self.current_price * (1 + trailing_pct / 100)
+            ceiling = self.stop_loss_price
+            if self.trailing_stop_price <= 0:
+                self.trailing_stop_price = min(candidate, ceiling)
+            else:
+                self.trailing_stop_price = min(
+                    self.trailing_stop_price,
+                    candidate,
+                    ceiling,
+                )
+
+    def _update_trailing_legacy(self, trailing_pct: float) -> None:
         if self.side == Side.LONG:
             candidate = self.current_price * (1 - trailing_pct / 100)
             self.trailing_stop_price = max(self.trailing_stop_price, candidate)
@@ -191,19 +268,22 @@ class Position:
                     self.trailing_stop_price, candidate)
 
     def should_close(self) -> tuple[bool, str]:
+        trailing_active = self.trailing_stop_price and (
+            not self.trailing_stage_enabled or self.trailing_armed
+        )
         if self.side == Side.LONG:
             if self.current_price <= self.stop_loss_price:
                 return True, TradeStatus.STOP_LOSS.value
             if self.current_price >= self.take_profit_price:
                 return True, TradeStatus.TAKE_PROFIT.value
-            if self.trailing_stop_price and self.current_price <= self.trailing_stop_price:
+            if trailing_active and self.current_price <= self.trailing_stop_price:
                 return True, TradeStatus.TRAILING_STOP.value
         else:
             if self.current_price >= self.stop_loss_price:
                 return True, TradeStatus.STOP_LOSS.value
             if self.current_price <= self.take_profit_price:
                 return True, TradeStatus.TAKE_PROFIT.value
-            if self.trailing_stop_price and self.current_price >= self.trailing_stop_price:
+            if trailing_active and self.current_price >= self.trailing_stop_price:
                 return True, TradeStatus.TRAILING_STOP.value
         return False, ""
 

@@ -25,6 +25,10 @@ class ExecutionAdapter(Protocol):
 class BaseExecution:
     initial_equity: float
     trailing_stop_pct: float = 0.0
+    trailing_stage_enabled: bool = False
+    trailing_break_even_r: float = 0.8
+    trailing_activation_r: float = 1.2
+    trailing_fee_buffer_pct: float = 0.04
     balance: float = field(init=False)
     realized_pnl: float = field(default=0.0, init=False)
     positions: dict[str, Position] = field(default_factory=dict, init=False)

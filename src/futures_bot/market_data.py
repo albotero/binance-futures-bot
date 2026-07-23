@@ -134,6 +134,57 @@ class BinanceFuturesRESTClient:
             signed=True,
         )
 
+    def futures_open_algo_orders(self, symbol: str) -> list[dict[str, Any]]:
+        payload = self._request(
+            "GET",
+            "/fapi/v1/algoOrders",
+            {"symbol": symbol},
+            signed=True,
+        )
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict):
+            rows = payload.get("orders")
+            if isinstance(rows, list):
+                return [row for row in rows if isinstance(row, dict)]
+        return []
+
+    def futures_position_risk(self, symbol: str | None = None) -> list[dict[str, Any]]:
+        payload = self._request(
+            "GET",
+            "/fapi/v2/positionRisk",
+            {"symbol": symbol} if symbol else None,
+            signed=True,
+        )
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict):
+            return [payload]
+        return []
+
+    def futures_user_trades(
+        self,
+        symbol: str,
+        *,
+        limit: int = 1000,
+        start_time: int | None = None,
+        end_time: int | None = None,
+    ) -> list[dict[str, Any]]:
+        payload = self._request(
+            "GET",
+            "/fapi/v1/userTrades",
+            {
+                "symbol": symbol,
+                "limit": limit,
+                "startTime": start_time,
+                "endTime": end_time,
+            },
+            signed=True,
+        )
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        return []
+
 
 @dataclass(slots=True)
 class BinanceMarketData:
