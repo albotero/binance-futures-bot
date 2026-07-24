@@ -29,7 +29,7 @@
       "enabled": true,
       "weight": 0.9,
       "params": {
-        "period": 14,
+        "period": 7,
         "threshold": 24,
         "candle_style": "heikin_ashi"
       }

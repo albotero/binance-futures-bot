@@ -39,6 +39,58 @@ cp .env.example .env
 
 Edit `.env` before running live commands.
 
+## Run As A systemd Service
+
+This project includes a systemd template unit at `deploy/systemd/futures-bot@.service`.
+
+Use this when you want the bot managed by `systemctl` with auto-restart and boot startup.
+
+1. Copy and edit the unit file:
+
+```bash
+sudo cp deploy/systemd/futures-bot@.service /etc/systemd/system/
+sudo nano /etc/systemd/system/futures-bot@.service
+```
+
+Update these fields in the copied unit:
+
+- `User=`
+- `Group=`
+- `WorkingDirectory=`
+- `Environment=PYTHONPATH=`
+- `ExecStart=`
+- `ReadWritePaths=`
+
+The bot loads `.env` automatically from `WorkingDirectory` via `python-dotenv`, so no `EnvironmentFile=` line is required.
+The template uses `/usr/bin/bash -lc` in `ExecStart=` for better systemd compatibility when launching the virtualenv interpreter.
+
+2. Reload systemd and enable one mode:
+
+```bash
+sudo systemctl daemon-reload
+
+# Engine only
+# sudo systemctl enable --now futures-bot@run-bot.service
+
+# Or dashboard + API
+sudo systemctl enable --now futures-bot@run-web.service
+```
+
+3. Check status and logs:
+
+```bash
+sudo systemctl status futures-bot@run-web.service
+journalctl -u futures-bot@run-web.service -f
+```
+
+4. Common operations:
+
+```bash
+sudo systemctl restart futures-bot@run-web.service
+sudo systemctl stop futures-bot@run-web.service
+sudo systemctl disable futures-bot@run-web.service
+```
+
 ## Main Commands
 
 Run dashboard:
