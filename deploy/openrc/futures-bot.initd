@@ -12,16 +12,12 @@ description="Binance Futures Trading Bot"
 : ${BOT_MODE:="run-web"}
 : ${BOT_LOG:="/var/log/futures-bot.log"}
 : ${BOT_PIDFILE:="/var/run/futures-bot.pid"}
+: ${BOT_WRAPPER:="${BOT_DIR}/deploy/openrc/futures-bot-wrapper.sh"}
 
-command="${BOT_VENV}/bin/python"
-command_args="-m futures_bot.main ${BOT_MODE}"
+command="${BOT_WRAPPER}"
 command_user="${BOT_USER}:${BOT_GROUP}"
 
 pidfile="${BOT_PIDFILE}"
-
-directory="${BOT_DIR}"
-
-export PYTHONPATH="${BOT_DIR}/src"
 
 depend() {
     need localmount
@@ -43,14 +39,13 @@ start_pre() {
     # Set correct permissions
     chown "${BOT_USER}:${BOT_GROUP}" "${BOT_LOG}" 2>/dev/null
     chmod 640 "${BOT_LOG}" 2>/dev/null
+    
+    # Make wrapper script executable
+    chmod +x "${BOT_WRAPPER}" 2>/dev/null
 }
 
 start() {
     ebegin "Starting ${description}"
-    
-    cd "${BOT_DIR}" || return 1
-    
-    export PYTHONPATH="${BOT_DIR}/src"
     
     start-stop-daemon --start \
         --pidfile="${pidfile}" \
@@ -59,7 +54,7 @@ start() {
         --background \
         --make-pidfile \
         --exec="${command}" \
-        -- ${command_args} >> "${BOT_LOG}" 2>&1
+        >> "${BOT_LOG}" 2>&1
     
     eend $?
 }
