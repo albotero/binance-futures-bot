@@ -91,6 +91,58 @@ sudo systemctl stop futures-bot@run-web.service
 sudo systemctl disable futures-bot@run-web.service
 ```
 
+## Run As An OpenRC Service (Alpine Linux)
+
+Alpine Linux uses OpenRC by default. This project includes OpenRC init and config files at:
+
+- `deploy/openrc/futures-bot.initd` — init script
+- `deploy/openrc/futures-bot.confd` — configuration
+
+**Installation on Alpine:**
+
+1. Copy the init script and config:
+
+```bash
+sudo cp deploy/openrc/futures-bot.initd /etc/init.d/futures-bot
+sudo cp deploy/openrc/futures-bot.confd /etc/conf.d/futures-bot
+sudo chmod +x /etc/init.d/futures-bot
+```
+
+2. Edit the config file with your values:
+
+```bash
+sudo nano /etc/conf.d/futures-bot
+```
+
+Update:
+
+- `BOT_USER=` — Linux user to run the bot
+- `BOT_GROUP=` — Linux group to run the bot
+- `BOT_DIR=` — Path to the bot working directory
+- `BOT_VENV=` — Path to the virtual environment
+- `BOT_MODE=` — `run-web` for dashboard+API, or `run-bot` for engine only
+
+3. Enable and start the service:
+
+```bash
+sudo rc-service futures-bot start
+sudo rc-update add futures-bot
+```
+
+4. Verify and manage:
+
+```bash
+sudo rc-service futures-bot status
+sudo rc-service futures-bot restart
+sudo rc-service futures-bot stop
+```
+
+View logs:
+
+```bash
+tail -f /var/log/futures-bot.log
+```
+
 ## Main Commands
 
 Run dashboard:

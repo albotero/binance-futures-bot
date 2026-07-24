@@ -1,0 +1,21 @@
+# OpenRC configuration for Binance Futures Bot
+# Copy to /etc/conf.d/futures-bot and edit with your values
+
+# Linux user and group to run the bot
+BOT_USER="YOUR_USER"
+BOT_GROUP="YOUR_USER"
+
+# Working directory (bot home)
+BOT_DIR="/home/YOUR_USER/github/binance-futures-bot"
+
+# Path to Python virtual environment
+BOT_VENV="${BOT_DIR}/.venv"
+
+# Bot mode: run-web (dashboard + API) or run-bot (engine only)
+BOT_MODE="run-web"
+
+# Log file location
+BOT_LOG="/var/log/futures-bot.log"
+
+# PID file location
+BOT_PIDFILE="/var/run/futures-bot.pid"

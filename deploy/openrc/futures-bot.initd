@@ -1,0 +1,83 @@
+#!/sbin/openrc-run
+# OpenRC init script for Binance Futures Bot
+# Copy to /etc/init.d/futures-bot and chmod +x
+# Edit /etc/conf.d/futures-bot with your configuration
+
+description="Binance Futures Trading Bot"
+
+: ${BOT_USER:="YOUR_USER"}
+: ${BOT_GROUP:="YOUR_USER"}
+: ${BOT_DIR:="/home/YOUR_USER/github/binance-futures-bot"}
+: ${BOT_VENV:="${BOT_DIR}/.venv"}
+: ${BOT_MODE:="run-web"}
+: ${BOT_LOG:="/var/log/futures-bot.log"}
+: ${BOT_PIDFILE:="/var/run/futures-bot.pid"}
+
+command="${BOT_VENV}/bin/python"
+command_args="-m futures_bot.main ${BOT_MODE}"
+command_user="${BOT_USER}:${BOT_GROUP}"
+
+pidfile="${BOT_PIDFILE}"
+logfile="${BOT_LOG}"
+
+directory="${BOT_DIR}"
+
+export PYTHONPATH="${BOT_DIR}/src"
+
+start_pre() {
+    # Ensure log directory exists and is writable
+    touch "${BOT_LOG}" 2>/dev/null || {
+        einfo "Creating log file at ${BOT_LOG}"
+        sudo touch "${BOT_LOG}" && sudo chown "${BOT_USER}:${BOT_GROUP}" "${BOT_LOG}"
+    }
+}
+
+depend() {
+    need localmount
+    after bootmisc
+    use network
+}
+
+start() {
+    ebegin "Starting ${description}"
+    cd "${BOT_DIR}" || return 1
+    
+    start-stop-daemon --start \
+        --pidfile="${pidfile}" \
+        --user="${BOT_USER}" \
+        --group="${BOT_GROUP}" \
+        --exec="${command}" \
+        -- ${command_args} >> "${logfile}" 2>&1 &
+    
+    echo $! > "${pidfile}"
+    eend $?
+}
+
+stop() {
+    ebegin "Stopping ${description}"
+    start-stop-daemon --stop \
+        --pidfile="${pidfile}" \
+        --exec="${command}"
+    eend $?
+}
+
+restart() {
+    ebegin "Restarting ${description}"
+    svc_stop
+    sleep 2
+    svc_start
+    eend $?
+}
+
+status() {
+    ebegin "Checking ${description}"
+    if [ -f "${pidfile}" ]; then
+        local pid=$(cat "${pidfile}")
+        if kill -0 "${pid}" 2>/dev/null; then
+            einfo "Running (PID ${pid})"
+            return 0
+        fi
+    fi
+    einfo "Not running"
+    return 1
+}
