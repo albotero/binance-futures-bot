@@ -39,7 +39,7 @@ class BinanceFuturesExecution(BaseExecution):
     )
 
     def __post_init__(self) -> None:
-        super().__post_init__()
+        BaseExecution.__post_init__(self)
         self.client = BinanceFuturesRESTClient(
             self.api_key, self.api_secret, self.base_url)
 

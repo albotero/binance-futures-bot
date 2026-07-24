@@ -145,16 +145,24 @@ tail -f /var/log/futures-bot.log
 
 ## Main Commands
 
-Run dashboard:
+Run dashboard (set PYTHONPATH first):
 
 ```bash
+export PYTHONPATH=$PWD/src
 futures-bot run-web
+
+# Or run directly:
+.venv/bin/python -m futures_bot.main run-web
 ```
 
 Run engine only:
 
 ```bash
+export PYTHONPATH=$PWD/src
 futures-bot run-bot
+
+# Or run directly:
+.venv/bin/python -m futures_bot.main run-bot
 ```
 
 Seed default strategy:

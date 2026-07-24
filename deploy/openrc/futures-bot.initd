@@ -18,19 +18,10 @@ command_args="-m futures_bot.main ${BOT_MODE}"
 command_user="${BOT_USER}:${BOT_GROUP}"
 
 pidfile="${BOT_PIDFILE}"
-logfile="${BOT_LOG}"
 
 directory="${BOT_DIR}"
 
 export PYTHONPATH="${BOT_DIR}/src"
-
-start_pre() {
-    # Ensure log directory exists and is writable
-    touch "${BOT_LOG}" 2>/dev/null || {
-        einfo "Creating log file at ${BOT_LOG}"
-        sudo touch "${BOT_LOG}" && sudo chown "${BOT_USER}:${BOT_GROUP}" "${BOT_LOG}"
-    }
-}
 
 depend() {
     need localmount
@@ -38,18 +29,38 @@ depend() {
     use network
 }
 
+start_pre() {
+    # Ensure log file and directory exist
+    local logdir=$(dirname "${BOT_LOG}")
+    if [ ! -d "$logdir" ]; then
+        mkdir -p "$logdir" || return 1
+    fi
+    
+    if [ ! -f "${BOT_LOG}" ]; then
+        touch "${BOT_LOG}" || return 1
+    fi
+    
+    # Set correct permissions
+    chown "${BOT_USER}:${BOT_GROUP}" "${BOT_LOG}" 2>/dev/null
+    chmod 640 "${BOT_LOG}" 2>/dev/null
+}
+
 start() {
     ebegin "Starting ${description}"
+    
     cd "${BOT_DIR}" || return 1
+    
+    export PYTHONPATH="${BOT_DIR}/src"
     
     start-stop-daemon --start \
         --pidfile="${pidfile}" \
         --user="${BOT_USER}" \
         --group="${BOT_GROUP}" \
+        --background \
+        --make-pidfile \
         --exec="${command}" \
-        -- ${command_args} >> "${logfile}" 2>&1 &
+        -- ${command_args} >> "${BOT_LOG}" 2>&1
     
-    echo $! > "${pidfile}"
     eend $?
 }
 
@@ -61,23 +72,19 @@ stop() {
     eend $?
 }
 
-restart() {
-    ebegin "Restarting ${description}"
-    svc_stop
-    sleep 2
-    svc_start
-    eend $?
+status() {
+    if [ ! -f "${pidfile}" ]; then
+        einfo "Not running (no pidfile)"
+        return 1
+    fi
+    
+    local pid=$(cat "${pidfile}")
+    if kill -0 "${pid}" 2>/dev/null; then
+        einfo "Running (PID ${pid})"
+        return 0
+    else
+        einfo "Not running (stale pidfile)"
+        return 1
+    fi
 }
 
-status() {
-    ebegin "Checking ${description}"
-    if [ -f "${pidfile}" ]; then
-        local pid=$(cat "${pidfile}")
-        if kill -0 "${pid}" 2>/dev/null; then
-            einfo "Running (PID ${pid})"
-            return 0
-        fi
-    fi
-    einfo "Not running"
-    return 1
-}
