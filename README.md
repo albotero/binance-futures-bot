@@ -97,17 +97,15 @@ Alpine Linux uses OpenRC by default. This project includes OpenRC init and confi
 
 - `deploy/openrc/futures-bot.initd` — init script
 - `deploy/openrc/futures-bot.confd` — configuration
-- `deploy/openrc/futures-bot-wrapper.sh` — environment wrapper
 
 **Installation on Alpine:**
 
-1. Copy all files to the system:
+1. Copy the init script and config:
 
 ```bash
 sudo cp deploy/openrc/futures-bot.initd /etc/init.d/futures-bot
 sudo cp deploy/openrc/futures-bot.confd /etc/conf.d/futures-bot
-sudo cp deploy/openrc/futures-bot-wrapper.sh /usr/local/bin/futures-bot-wrapper.sh
-sudo chmod +x /etc/init.d/futures-bot /usr/local/bin/futures-bot-wrapper.sh
+sudo chmod +x /etc/init.d/futures-bot
 ```
 
 2. Edit the config file with your values:
@@ -123,7 +121,6 @@ Update:
 - `BOT_DIR=` — Path to the bot working directory
 - `BOT_VENV=` — Path to the virtual environment
 - `BOT_MODE=` — `run-web` for dashboard+API, or `run-bot` for engine only
-- `BOT_WRAPPER=` — Path to wrapper script (usually `/usr/local/bin/futures-bot-wrapper.sh` or `$BOT_DIR/deploy/openrc/futures-bot-wrapper.sh`)
 
 3. Enable and start the service:
 

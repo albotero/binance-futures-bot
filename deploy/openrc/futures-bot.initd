@@ -12,10 +12,6 @@ description="Binance Futures Trading Bot"
 : ${BOT_MODE:="run-web"}
 : ${BOT_LOG:="/var/log/futures-bot.log"}
 : ${BOT_PIDFILE:="/var/run/futures-bot.pid"}
-: ${BOT_WRAPPER:="${BOT_DIR}/deploy/openrc/futures-bot-wrapper.sh"}
-
-command="${BOT_WRAPPER}"
-command_user="${BOT_USER}:${BOT_GROUP}"
 
 pidfile="${BOT_PIDFILE}"
 
@@ -40,34 +36,77 @@ start_pre() {
     chown "${BOT_USER}:${BOT_GROUP}" "${BOT_LOG}" 2>/dev/null
     chmod 640 "${BOT_LOG}" 2>/dev/null
     
-    # Make wrapper script executable
-    chmod +x "${BOT_WRAPPER}" 2>/dev/null
+    # Clean up stale pidfile if process isn't running
+    if [ -f "${pidfile}" ]; then
+        local pid=$(cat "${pidfile}")
+        if ! kill -0 "${pid}" 2>/dev/null; then
+            rm -f "${pidfile}"
+        fi
+    fi
 }
 
 start() {
     ebegin "Starting ${description}"
     
-    start-stop-daemon --start \
-        --pidfile="${pidfile}" \
-        --user="${BOT_USER}" \
-        --group="${BOT_GROUP}" \
-        --background \
-        --make-pidfile \
-        --exec="${command}" \
-        >> "${BOT_LOG}" 2>&1
+    if [ -f "${pidfile}" ]; then
+        local pid=$(cat "${pidfile}")
+        if kill -0 "${pid}" 2>/dev/null; then
+            eend 1 "Already running"
+            return 1
+        fi
+    fi
     
-    eend $?
+    # Export config variables for the wrapper script
+    export BOT_USER BOT_GROUP BOT_DIR BOT_VENV BOT_MODE BOT_LOG
+    
+    # Start the bot in background
+    su -s /bin/sh "${BOT_USER}" -c "cd '${BOT_DIR}' && export PYTHONPATH='${BOT_DIR}/src' && exec '${BOT_VENV}/bin/python' -m futures_bot.main ${BOT_MODE}" >> "${BOT_LOG}" 2>&1 &
+    
+    local pid=$!
+    echo "${pid}" > "${pidfile}"
+    sleep 1
+    
+    # Verify process is still running
+    if kill -0 "${pid}" 2>/dev/null; then
+        eend 0
+        return 0
+    else
+        rm -f "${pidfile}"
+        eend 1 "Failed to start"
+        return 1
+    fi
 }
 
 stop() {
     ebegin "Stopping ${description}"
-    start-stop-daemon --stop \
-        --pidfile="${pidfile}" \
-        --exec="${command}"
-    eend $?
+    
+    if [ ! -f "${pidfile}" ]; then
+        eend 0 "Not running"
+        return 0
+    fi
+    
+    local pid=$(cat "${pidfile}")
+    if kill -0 "${pid}" 2>/dev/null; then
+        kill "${pid}"
+        # Wait for graceful shutdown (up to 10 seconds)
+        local count=0
+        while kill -0 "${pid}" 2>/dev/null && [ $count -lt 10 ]; do
+            sleep 1
+            count=$((count + 1))
+        done
+        # Force kill if still running
+        if kill -0 "${pid}" 2>/dev/null; then
+            kill -9 "${pid}" 2>/dev/null
+        fi
+    fi
+    
+    rm -f "${pidfile}"
+    eend 0
 }
 
 status() {
+    ebegin "Checking ${description}"
+    
     if [ ! -f "${pidfile}" ]; then
         einfo "Not running (no pidfile)"
         return 1
@@ -79,6 +118,7 @@ status() {
         return 0
     else
         einfo "Not running (stale pidfile)"
+        rm -f "${pidfile}"
         return 1
     fi
 }
