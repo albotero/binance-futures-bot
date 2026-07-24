@@ -10,7 +10,7 @@ from .config import load_strategy_profile, save_strategy_profile
 from .execution import BaseExecution
 from .execution_live import BinanceFuturesExecution
 from .execution_paper import PaperExecution
-from .market_data import BinanceMarketData
+from .market_data import BinanceAPIError, BinanceMarketData
 from .models import BotConfig, DashboardMetrics, Position, Side, StrategyProfile, TradeStatus, utcnow
 from .storage import SQLiteStore
 from .strategies.engine import StrategyEvaluation, evaluate_profile
@@ -243,14 +243,26 @@ class TradingEngine:
 
     def run_once(self) -> None:
         with self._lock:
-            symbols = self.list_symbols()
-            self.state.active_symbols = symbols
             self.state.last_run_at = utcnow().isoformat()
             self.state.latest_actions.clear()
             self.state.latest_scores.clear()
             self.state.latest_reasons.clear()
+            try:
+                symbols = self.list_symbols()
+            except Exception as exc:  # noqa: BLE001
+                self.state.active_symbols = []
+                self._handle_runtime_error("symbols", exc)
+                self._record_snapshot(self.state.last_run_at)
+                return
 
-            self._reconcile_exchange_positions(symbols)
+            self.state.active_symbols = symbols
+
+            try:
+                self._reconcile_exchange_positions(symbols)
+            except Exception as exc:  # noqa: BLE001
+                self._handle_runtime_error("exchange reconciliation", exc)
+                self._record_snapshot(self.state.last_run_at)
+                return
 
             for symbol in symbols:
                 if symbol in self.state.halted_symbols:
@@ -267,9 +279,34 @@ class TradingEngine:
                     self.state.latest_reasons[symbol] = evaluation.reasons
                     self._sync_position(symbol, current_price, evaluation)
                 except Exception as exc:  # noqa: BLE001
-                    self.state.last_error = f"{symbol}: {exc}"
+                    if self._handle_runtime_error(symbol, exc):
+                        break
 
             self._record_snapshot(self.state.last_run_at)
+
+    def _handle_runtime_error(self, context: str, exc: Exception) -> bool:
+        message = str(exc)
+        should_pause = False
+        if isinstance(exc, BinanceAPIError):
+            if exc.is_auth_ip_restriction:
+                ip = exc.request_ip
+                target = f" from IP {ip}" if ip else " from the current IP"
+                message = (
+                    f"Binance rejected authenticated requests{target}. "
+                    "Your VPN/public IP likely changed. Update the API key IP whitelist "
+                    "or switch back to an allowed IP."
+                )
+                should_pause = True
+            elif exc.status_code == 401:
+                message = (
+                    "Binance rejected authenticated requests. Check API permissions, IP whitelist, "
+                    "and mainnet/testnet key alignment."
+                )
+                should_pause = True
+        self.state.last_error = f"{context}: {message}"
+        if should_pause:
+            self.state.paused = True
+        return should_pause
 
     def _reconcile_exchange_positions(self, active_symbols: list[str]) -> None:
         if self.config.mode.lower() != "live":

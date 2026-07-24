@@ -9,6 +9,7 @@ from futures_bot.execution_live import BinanceFuturesExecution, _group_exchange_
 from futures_bot.engine import TradingEngine
 from futures_bot.config import default_strategy_profile
 from futures_bot.backtest import BacktestReport, BacktestSymbolReport, BacktestSuiteResult, _open_backtest_position, compare_profiles, fetch_backtest_candles, parse_backtest_duration, run_backtest_suite
+from futures_bot.market_data import BinanceAPIError
 
 import tempfile
 import unittest
@@ -343,6 +344,46 @@ class EngineTransitionTests(unittest.TestCase):
             self.config.initial_equity + expected_realized,
             places=8,
         )
+
+    def test_live_ip_restriction_error_pauses_bot_with_actionable_message(self) -> None:
+        live_config = BotConfig(
+            mode="live",
+            testnet=True,
+            initial_equity=1000.0,
+            db_path=str(Path(self.temp_dir.name) / "live.db"),
+            data_dir=str(Path(self.temp_dir.name) / "live-data"),
+            symbols=["BTCUSDT"],
+        )
+        engine = TradingEngine(live_config)
+
+        def raise_ip_error(symbol: str) -> tuple[float, float]:
+            raise BinanceAPIError(
+                method="GET",
+                path="/fapi/v2/positionRisk",
+                status_code=401,
+                detail=(
+                    "Invalid API-key, IP, or permissions for action, request ip: 205.147.22.18 "
+                    "(code -2015). Check API key/secret, Futures trading permission, IP whitelist, "
+                    "and testnet/mainnet key alignment."
+                ),
+                error_code=-2015,
+            )
+
+        engine.storage.list_open_trades = lambda: [{
+            "id": 1,
+            "symbol": "BTCUSDT",
+            "side": "LONG",
+            "quantity": 0.01,
+            "entry_price": 100.0,
+            "opened_at": "2026-07-24T00:00:00+00:00",
+        }]  # type: ignore[method-assign]
+
+        with patch.object(BinanceFuturesExecution, "exchange_position_snapshot", side_effect=raise_ip_error):
+            engine.run_once()
+
+        self.assertTrue(engine.state.paused)
+        self.assertIn("VPN/public IP likely changed", engine.state.last_error)
+        self.assertIn("205.147.22.18", engine.state.last_error)
 
 
 class BacktestTests(unittest.TestCase):

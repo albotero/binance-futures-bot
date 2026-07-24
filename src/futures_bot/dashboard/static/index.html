@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Futures Bot Control Room</title>
-    <link rel="stylesheet" href="/static/style.css?v=20260719-redesign5" />
+    <link rel="stylesheet" href="/static/style.css?v=20260724-alert-banner" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   </head>
   <body>
@@ -26,6 +26,8 @@
           <button id="stopButton" data-action="stop" class="danger">Stop</button>
         </div>
       </section>
+
+      <section id="runtimeAlert" class="runtime-alert is-hidden" aria-live="polite"></section>
 
       <section class="metrics" id="metrics"></section>
 
@@ -108,6 +110,6 @@
         </article>
       </section>
     </main>
-    <script src="/static/app.js?v=20260723-price-precision"></script>
+    <script src="/static/app.js?v=20260724-alert-banner"></script>
   </body>
 </html>

@@ -3,12 +3,47 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+
+
+class BinanceAPIError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        method: str,
+        path: str,
+        status_code: int,
+        detail: str,
+        error_code: int | None = None,
+    ) -> None:
+        self.method = method
+        self.path = path
+        self.status_code = status_code
+        self.detail = detail
+        self.error_code = error_code
+        super().__init__(
+            f"Binance API {method} {path} failed ({status_code}): {detail}")
+
+    @property
+    def request_ip(self) -> str | None:
+        match = re.search(
+            r"request ip:\s*([^\s,)]+)", self.detail, flags=re.IGNORECASE)
+        if not match:
+            return None
+        return match.group(1)
+
+    @property
+    def is_auth_ip_restriction(self) -> bool:
+        if self.error_code != -2015:
+            return False
+        detail = self.detail.lower()
+        return "request ip:" in detail or "invalid api-key, ip, or permissions" in detail
 
 
 @dataclass(slots=True)
@@ -38,6 +73,7 @@ class BinanceFuturesRESTClient:
                 return json.loads(response.read().decode())
         except HTTPError as exc:
             raw_body = ""
+            error_code: int | None = None
             try:
                 raw_body = exc.read().decode("utf-8", errors="replace")
             except Exception:  # noqa: BLE001
@@ -49,6 +85,8 @@ class BinanceFuturesRESTClient:
                 if isinstance(payload, dict):
                     code = payload.get("code")
                     msg = payload.get("msg")
+                    if isinstance(code, int):
+                        error_code = code
                     if code is not None and msg:
                         detail = f"{msg} (code {code})"
             except json.JSONDecodeError:
@@ -60,8 +98,13 @@ class BinanceFuturesRESTClient:
                     "IP whitelist, and testnet/mainnet key alignment."
                 )
 
-            raise RuntimeError(
-                f"Binance API {method} {path} failed ({exc.code}): {detail}") from exc
+            raise BinanceAPIError(
+                method=method,
+                path=path,
+                status_code=exc.code,
+                detail=detail,
+                error_code=error_code,
+            ) from exc
 
     @staticmethod
     def _encode_params(params: dict[str, Any]) -> str:

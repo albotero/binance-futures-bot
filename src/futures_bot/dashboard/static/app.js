@@ -58,6 +58,15 @@ function formatPrice(value) {
   }).format(numeric)
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;")
+}
+
 function parseApiError(message) {
   try {
     const payload = JSON.parse(message)
@@ -148,6 +157,7 @@ function renderBotState(payload) {
   const root = document.getElementById("botState")
   const state = payload.state || {}
   const profile = payload.profile || {}
+  const lastError = state.last_error ? escapeHtml(state.last_error) : "none"
   const lastCycle = state.last_run_at
     ? `<div class="pill">Last engine cycle: ${formatUtcHuman(state.last_run_at)}</div>`
     : ""
@@ -156,7 +166,40 @@ function renderBotState(payload) {
     <div class="pill">Started: ${formatUtcHuman(state.started_at)}</div>
     ${lastCycle}
     <div class="pill">Symbols: ${(state.active_symbols || []).join(", ") || "n/a"}</div>
-    <div class="pill">Last error: ${state.last_error || "none"}</div>
+    <div class="pill">Last error: ${lastError}</div>
+  `
+}
+
+function renderRuntimeAlert(payload) {
+  const root = document.getElementById("runtimeAlert")
+  const botState = payload.state || {}
+  const lastError = String(botState.last_error || "").trim()
+  if (!lastError) {
+    root.className = "runtime-alert is-hidden"
+    root.innerHTML = ""
+    return
+  }
+
+  const paused = Boolean(botState.paused)
+  const ipRestriction = /vpn\/public ip likely changed|ip whitelist|request ip:/i.test(lastError)
+  const tone = ipRestriction ? "runtime-alert danger" : paused ? "runtime-alert warning" : "runtime-alert info"
+  const title = ipRestriction ? "Exchange access blocked" : paused ? "Bot paused by runtime alert" : "Runtime alert"
+  const hint = ipRestriction
+    ? "Binance rejected an authenticated request from the current IP."
+    : paused
+      ? "Review the latest engine error before resuming trading."
+      : "The bot reported an error during the latest cycle."
+
+  root.className = tone
+  root.innerHTML = `
+    <div class="runtime-alert__eyebrow">Attention required</div>
+    <div class="runtime-alert__body">
+      <div>
+        <h2>${title}</h2>
+        <p>${hint}</p>
+      </div>
+      <div class="runtime-alert__message">${escapeHtml(lastError)}</div>
+    </div>
   `
 }
 
@@ -732,6 +775,7 @@ async function refresh() {
   state.latestStrategies = strategies
   state.latestExchange = exchange
   updateHistoryFromSnapshots(history.snapshots || [], payload.metrics || {})
+  renderRuntimeAlert(payload)
   renderMetrics(payload.metrics || {})
   renderHeroControls()
   renderHistorySummary()

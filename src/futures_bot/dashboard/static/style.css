@@ -69,6 +69,10 @@ body {
   padding: 30px 0 52px;
 }
 
+.is-hidden {
+  display: none !important;
+}
+
 .hero,
 .panel,
 .metric {
@@ -210,6 +214,79 @@ button:disabled {
 .panel-grid {
   display: grid;
   gap: 16px;
+}
+
+.runtime-alert {
+  position: relative;
+  margin-bottom: 16px;
+  padding: 18px 20px;
+  border-radius: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.runtime-alert::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 6px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.runtime-alert.info {
+  color: #8ad7ff;
+  background: linear-gradient(135deg, rgba(18, 55, 94, 0.94) 0%, rgba(9, 23, 38, 0.96) 100%);
+}
+
+.runtime-alert.warning {
+  color: #ffd27a;
+  background: linear-gradient(135deg, rgba(85, 53, 13, 0.94) 0%, rgba(33, 21, 7, 0.97) 100%);
+}
+
+.runtime-alert.danger {
+  color: #ff9aa6;
+  background:
+    radial-gradient(36rem 22rem at 100% 0%, rgba(255, 107, 124, 0.16), transparent 60%),
+    linear-gradient(135deg, rgba(90, 20, 34, 0.96) 0%, rgba(32, 11, 18, 0.98) 100%);
+}
+
+.runtime-alert__eyebrow {
+  margin-bottom: 10px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.runtime-alert__body {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(280px, 1.1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.runtime-alert h2 {
+  font-size: 1.18rem;
+}
+
+.runtime-alert p {
+  margin-top: 6px;
+  color: rgba(236, 243, 255, 0.82);
+  line-height: 1.55;
+}
+
+.runtime-alert__message {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  background: rgba(4, 9, 18, 0.34);
+  padding: 13px 15px;
+  color: var(--text);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .metrics {
@@ -573,6 +650,10 @@ tbody tr:hover {
 
   .hero-actions {
     justify-content: flex-start;
+  }
+
+  .runtime-alert__body {
+    grid-template-columns: 1fr;
   }
 
   .form-grid,
