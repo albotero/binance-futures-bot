@@ -121,7 +121,11 @@ Update:
 - `BOT_GROUP=` — Linux group to run the bot
 - `BOT_DIR=` — Path to the bot working directory
 - `BOT_VENV=` — Path to the virtual environment
-- `BOT_MODE=` — `run-web` for dashboard+API, or `run-bot` for engine only
+- `BOT_COMMAND=` — `run-web` for dashboard+API, or `run-bot` for engine only
+
+Do not set `BOT_MODE` in `/etc/conf.d/futures-bot`. Trading mode belongs in the
+project `.env` as `BOT_MODE=paper` or `BOT_MODE=live`; exporting it from OpenRC
+would override the `.env` value.
 
 3. Enable and start the service:
 
@@ -142,6 +146,27 @@ View logs:
 
 ```bash
 tail -f /var/log/futures-bot.log
+```
+
+If the dashboard reports `<urlopen error [Errno -3] Try again>`, Alpine cannot
+resolve the Binance hostname. This happens before strategy evaluation or order
+submission. Verify DNS and HTTPS from the same host:
+
+```bash
+cat /etc/resolv.conf
+getent hosts fapi.binance.com
+wget -S -O - https://fapi.binance.com/fapi/v1/ping
+```
+
+If hostname lookup fails, repair the Alpine host's DNS configuration (DHCP,
+network manager, container DNS, or the nameservers that generate
+`/etc/resolv.conf`) before restarting the bot. Recopy the updated OpenRC script
+so startup waits for Alpine's `net` service:
+
+```bash
+sudo cp deploy/openrc/futures-bot.initd /etc/init.d/futures-bot
+sudo chmod +x /etc/init.d/futures-bot
+sudo rc-service futures-bot restart
 ```
 
 ## Main Commands

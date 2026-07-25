@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import socket
 import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from urllib.error import URLError
 
 from .config import load_strategy_profile, save_strategy_profile
 from .execution import BaseExecution
@@ -85,7 +87,10 @@ class TradingEngine:
         )
 
     def _validate_mode(self) -> None:
-        if self.config.mode.lower() != "live":
+        mode = self.config.mode.strip().lower()
+        if mode not in {"paper", "live"}:
+            raise ValueError("BOT_MODE must be either 'paper' or 'live'")
+        if mode != "live":
             return
         if self.config.testnet:
             return
@@ -256,6 +261,7 @@ class TradingEngine:
                 return
 
             self.state.active_symbols = symbols
+            cycle_had_error = False
 
             try:
                 self._reconcile_exchange_positions(symbols)
@@ -279,15 +285,23 @@ class TradingEngine:
                     self.state.latest_reasons[symbol] = evaluation.reasons
                     self._sync_position(symbol, current_price, evaluation)
                 except Exception as exc:  # noqa: BLE001
+                    cycle_had_error = True
                     if self._handle_runtime_error(symbol, exc):
                         break
 
+            if not cycle_had_error:
+                self.state.last_error = ""
             self._record_snapshot(self.state.last_run_at)
 
     def _handle_runtime_error(self, context: str, exc: Exception) -> bool:
         message = str(exc)
         should_pause = False
-        if isinstance(exc, BinanceAPIError):
+        if isinstance(exc, URLError) and isinstance(exc.reason, socket.gaierror):
+            message = (
+                f"DNS lookup failed for Binance endpoint {self.config.binance_base_url}: "
+                f"{exc.reason}. Check the host network and /etc/resolv.conf."
+            )
+        elif isinstance(exc, BinanceAPIError):
             if exc.is_auth_ip_restriction:
                 ip = exc.request_ip
                 target = f" from IP {ip}" if ip else " from the current IP"

@@ -16,6 +16,7 @@ from futures_bot.order_check import place_and_cancel_test_order
 import tempfile
 import unittest
 import time
+import socket
 from pathlib import Path
 import sys
 from unittest.mock import MagicMock, patch
@@ -212,6 +213,16 @@ class EngineTransitionTests(unittest.TestCase):
             threshold=0.3,
             rules=[StrategyRule(name="ema_cross", params={})],
         )
+
+    def test_invalid_mode_is_rejected_instead_of_using_paper_execution(self) -> None:
+        invalid_config = BotConfig(
+            mode="run-web",
+            db_path=str(Path(self.temp_dir.name) / "invalid-mode.db"),
+            data_dir=str(Path(self.temp_dir.name) / "invalid-mode-data"),
+        )
+
+        with self.assertRaisesRegex(ValueError, "BOT_MODE must be either"):
+            TradingEngine(invalid_config)
 
     def test_position_reversal_closes_and_reopens(self) -> None:
         self.engine._open_from_signal("BTCUSDT", 100.0, "long")
@@ -464,6 +475,37 @@ class EngineTransitionTests(unittest.TestCase):
         self.assertTrue(engine.state.paused)
         self.assertIn("VPN/public IP likely changed", engine.state.last_error)
         self.assertIn("205.147.22.18", engine.state.last_error)
+
+    def test_successful_cycle_clears_previous_runtime_error(self) -> None:
+        self.engine.config.symbols = ["BTCUSDT"]
+        self.engine.state.last_error = "BTCUSDT: <urlopen error [Errno -3] Try again>"
+        evaluation = StrategyEvaluation(
+            score=0.0,
+            action="hold",
+            reasons=["No signal"],
+            signals=[],
+        )
+
+        with (
+            patch("futures_bot.engine.BinanceMarketData.fetch_candles",
+                  return_value=make_candles([100.0] * 30)),
+            patch("futures_bot.engine.evaluate_profile",
+                  return_value=evaluation),
+            patch.object(self.engine, "_sync_position"),
+        ):
+            self.engine.run_once()
+
+        self.assertEqual(self.engine.state.last_error, "")
+
+    def test_dns_error_reports_endpoint_and_alpine_resolver_hint(self) -> None:
+        self.engine._handle_runtime_error(
+            "BTCUSDC",
+            URLError(socket.gaierror(-3, "Try again")),
+        )
+
+        self.assertIn("DNS lookup failed", self.engine.state.last_error)
+        self.assertIn("https://fapi.binance.com", self.engine.state.last_error)
+        self.assertIn("/etc/resolv.conf", self.engine.state.last_error)
 
 
 class BacktestTests(unittest.TestCase):

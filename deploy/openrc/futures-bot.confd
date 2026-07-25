@@ -11,8 +11,9 @@ BOT_DIR="/home/YOUR_USER/github/binance-futures-bot"
 # Path to Python virtual environment
 BOT_VENV="${BOT_DIR}/.venv"
 
-# Bot mode: run-web (dashboard + API) or run-bot (engine only)
-BOT_MODE="run-web"
+# Launch command: run-web (dashboard + API) or run-bot (engine only).
+# Trading mode is configured separately as BOT_MODE=paper/live in the project .env.
+BOT_COMMAND="run-web"
 
 # Log file location
 BOT_LOG="/var/log/futures-bot.log"

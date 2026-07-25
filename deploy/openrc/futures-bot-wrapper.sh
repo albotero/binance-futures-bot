@@ -10,7 +10,7 @@ fi
 # Set defaults if not provided
 : ${BOT_DIR:="/home/binance-bot/github/binance-futures-bot"}
 : ${BOT_VENV:="${BOT_DIR}/.venv"}
-: ${BOT_MODE:="run-web"}
+: ${BOT_COMMAND:="run-web"}
 
 # Set up environment
 export PYTHONPATH="${BOT_DIR}/src"
@@ -19,4 +19,4 @@ export PYTHONPATH="${BOT_DIR}/src"
 cd "${BOT_DIR}" || exit 1
 
 # Execute the bot
-exec "${BOT_VENV}/bin/python" -m futures_bot.main ${BOT_MODE}
+exec "${BOT_VENV}/bin/python" -m futures_bot.main ${BOT_COMMAND}

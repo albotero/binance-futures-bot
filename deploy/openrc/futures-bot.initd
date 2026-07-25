@@ -9,7 +9,7 @@ description="Binance Futures Trading Bot"
 : ${BOT_GROUP:="YOUR_USER"}
 : ${BOT_DIR:="/home/YOUR_USER/github/binance-futures-bot"}
 : ${BOT_VENV:="${BOT_DIR}/.venv"}
-: ${BOT_MODE:="run-web"}
+: ${BOT_COMMAND:="run-web"}
 : ${BOT_LOG:="/var/log/futures-bot.log"}
 : ${BOT_PIDFILE:="/var/run/futures-bot.pid"}
 
@@ -18,7 +18,8 @@ pidfile="${BOT_PIDFILE}"
 depend() {
     need localmount
     after bootmisc
-    use network
+    need net
+    use dns
 }
 
 start_pre() {
@@ -57,10 +58,10 @@ start() {
     fi
     
     # Export config variables for the wrapper script
-    export BOT_USER BOT_GROUP BOT_DIR BOT_VENV BOT_MODE BOT_LOG
+    export BOT_USER BOT_GROUP BOT_DIR BOT_VENV BOT_COMMAND BOT_LOG
     
     # Start the bot in background
-    su -s /bin/sh "${BOT_USER}" -c "cd '${BOT_DIR}' && export PYTHONPATH='${BOT_DIR}/src' && exec '${BOT_VENV}/bin/python' -m futures_bot.main ${BOT_MODE}" >> "${BOT_LOG}" 2>&1 &
+    su -s /bin/sh "${BOT_USER}" -c "cd '${BOT_DIR}' && export PYTHONPATH='${BOT_DIR}/src' && exec '${BOT_VENV}/bin/python' -m futures_bot.main ${BOT_COMMAND}" >> "${BOT_LOG}" 2>&1 &
     
     local pid=$!
     echo "${pid}" > "${pidfile}"
