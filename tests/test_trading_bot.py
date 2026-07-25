@@ -924,6 +924,198 @@ class BacktestTests(unittest.TestCase):
 
 
 class LiveExecutionTests(unittest.TestCase):
+    @patch("futures_bot.execution_live.time.sleep")
+    def test_open_retries_failed_submission_with_same_client_order_id(self, sleep_mock: MagicMock) -> None:
+        execution = BinanceFuturesExecution(
+            initial_equity=1000.0,
+            live_protection_mode="local_only",
+        )
+
+        class FakeClient:
+            def __init__(self) -> None:
+                self.client_order_ids: list[str] = []
+
+            def futures_change_leverage(self, symbol: str, leverage: int) -> dict:
+                return {"symbol": symbol, "leverage": leverage}
+
+            def futures_create_order(self, **params: dict) -> dict:
+                self.client_order_ids.append(str(params["newClientOrderId"]))
+                if len(self.client_order_ids) < 3:
+                    raise RuntimeError("temporary submission failure")
+                return {
+                    "symbol": params["symbol"],
+                    "orderId": 70,
+                    "status": "FILLED",
+                    "avgPrice": "100.5",
+                    "executedQty": "0.01",
+                    "cumQuote": "1.005",
+                }
+
+            def futures_get_order_by_client_id(self, symbol: str, client_order_id: str) -> dict:
+                raise RuntimeError("order not found")
+
+        fake_client = FakeClient()
+        execution.client = fake_client  # type: ignore[assignment]
+
+        opened = execution.open_position(
+            Position(
+                symbol="BTCUSDT",
+                side=Side.LONG,
+                quantity=0.01,
+                entry_price=100.0,
+                current_price=100.0,
+                leverage=3,
+                strategy="test",
+                stop_loss_price=95.0,
+                take_profit_price=110.0,
+                trailing_stop_price=96.0,
+            )
+        )
+
+        self.assertEqual(len(fake_client.client_order_ids), 3)
+        self.assertEqual(len(set(fake_client.client_order_ids)), 1)
+        self.assertAlmostEqual(opened.entry_price, 100.5, places=8)
+        self.assertEqual(sleep_mock.call_count, 2)
+
+    @patch("futures_bot.execution_live.time.sleep")
+    def test_open_retries_fill_confirmation_for_same_order(self, sleep_mock: MagicMock) -> None:
+        execution = BinanceFuturesExecution(
+            initial_equity=1000.0,
+            live_protection_mode="local_only",
+        )
+
+        class FakeClient:
+            def __init__(self) -> None:
+                self.created_orders = 0
+                self.order_queries = 0
+
+            def futures_change_leverage(self, symbol: str, leverage: int) -> dict:
+                return {"symbol": symbol, "leverage": leverage}
+
+            def futures_create_order(self, **params: dict) -> dict:
+                self.created_orders += 1
+                return {
+                    "symbol": params["symbol"],
+                    "orderId": 80,
+                    "status": "NEW",
+                    "avgPrice": "0",
+                    "executedQty": "0",
+                    "cumQuote": "0",
+                }
+
+            def futures_user_trades(self, symbol: str, **params: dict) -> list[dict]:
+                return []
+
+            def futures_get_order(self, symbol: str, order_id: int) -> dict:
+                self.order_queries += 1
+                if self.order_queries == 1:
+                    return {
+                        "symbol": symbol,
+                        "orderId": order_id,
+                        "status": "NEW",
+                        "avgPrice": "0",
+                        "executedQty": "0",
+                        "cumQuote": "0",
+                    }
+                return {
+                    "symbol": symbol,
+                    "orderId": order_id,
+                    "status": "FILLED",
+                    "avgPrice": "100.25",
+                    "executedQty": "0.01",
+                    "cumQuote": "1.0025",
+                }
+
+        fake_client = FakeClient()
+        execution.client = fake_client  # type: ignore[assignment]
+
+        opened = execution.open_position(
+            Position(
+                symbol="BTCUSDT",
+                side=Side.LONG,
+                quantity=0.01,
+                entry_price=100.0,
+                current_price=100.0,
+                leverage=3,
+                strategy="test",
+                stop_loss_price=95.0,
+                take_profit_price=110.0,
+                trailing_stop_price=96.0,
+            )
+        )
+
+        self.assertEqual(fake_client.created_orders, 1)
+        self.assertEqual(fake_client.order_queries, 2)
+        self.assertAlmostEqual(opened.entry_price, 100.25, places=8)
+        sleep_mock.assert_called_once_with(0.5)
+
+    @patch("futures_bot.execution_live.time.sleep")
+    def test_open_rejects_order_without_confirmed_fill(self, sleep_mock: MagicMock) -> None:
+        execution = BinanceFuturesExecution(initial_equity=1000.0)
+
+        class FakeClient:
+            def __init__(self) -> None:
+                self.algo_orders: list[dict] = []
+                self.order_queries = 0
+
+            def futures_change_leverage(self, symbol: str, leverage: int) -> dict:
+                return {"symbol": symbol, "leverage": leverage}
+
+            def futures_create_order(self, **params: dict) -> dict:
+                return {
+                    "symbol": params["symbol"],
+                    "orderId": 90,
+                    "status": "NEW",
+                    "avgPrice": "0",
+                    "executedQty": "0",
+                    "cumQuote": "0",
+                }
+
+            def futures_user_trades(self, symbol: str, **params: dict) -> list[dict]:
+                return []
+
+            def futures_get_order(self, symbol: str, order_id: int) -> dict:
+                self.order_queries += 1
+                return {
+                    "symbol": symbol,
+                    "orderId": order_id,
+                    "status": "NEW",
+                    "avgPrice": "0",
+                    "executedQty": "0",
+                    "cumQuote": "0",
+                }
+
+            def futures_symbol_ticker(self, symbol: str) -> dict:
+                return {"symbol": symbol, "price": "100.0"}
+
+            def futures_place_algo_order(self, **params: dict) -> dict:
+                self.algo_orders.append(params)
+                return {"algoId": 91}
+
+        fake_client = FakeClient()
+        execution.client = fake_client  # type: ignore[assignment]
+
+        with self.assertRaisesRegex(RuntimeError, "not confirmed filled"):
+            execution.open_position(
+                Position(
+                    symbol="BTCUSDT",
+                    side=Side.LONG,
+                    quantity=0.01,
+                    entry_price=100.0,
+                    current_price=100.0,
+                    leverage=3,
+                    strategy="test",
+                    stop_loss_price=95.0,
+                    take_profit_price=110.0,
+                    trailing_stop_price=96.0,
+                )
+            )
+
+        self.assertIsNone(execution.get_position("BTCUSDT"))
+        self.assertEqual(fake_client.algo_orders, [])
+        self.assertEqual(fake_client.order_queries, 3)
+        self.assertEqual(sleep_mock.call_count, 2)
+
     def test_group_exchange_fills_builds_weighted_average_by_order(self) -> None:
         fills = _group_exchange_fills([
             {"symbol": "NEOUSDC", "orderId": 10, "buyer": True, "qty": "2",

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP, ROUND_UP
 from typing import Any
@@ -11,6 +13,10 @@ from .models import Position, Side, TradeStatus, iso
 
 BINANCE_TRAILING_CALLBACK_MIN = 0.1
 BINANCE_TRAILING_CALLBACK_MAX = 5.0
+ENTRY_FILL_CONFIRM_ATTEMPTS = 3
+ENTRY_FILL_CONFIRM_DELAY_SECONDS = 0.5
+ENTRY_SUBMIT_ATTEMPTS = 3
+ENTRY_SUBMIT_DELAY_SECONDS = 0.5
 
 
 @dataclass(slots=True)
@@ -48,24 +54,31 @@ class BinanceFuturesExecution(BaseExecution):
         side = "BUY" if position.side == Side.LONG else "SELL"
         self.client.futures_change_leverage(
             symbol=position.symbol, leverage=position.leverage)
-        order = self.client.futures_create_order(
+        order = self._submit_entry_order(
             symbol=position.symbol,
             side=side,
-            type="MARKET",
             quantity=self._format_quantity(position.symbol, position.quantity),
-            newOrderRespType="RESULT",
         )
         order_id = _extract_order_id(order)
-        fill = self._exchange_fill_for_order(
-            position.symbol,
-            order_id,
-            order_payload=order,
-            fallback_price=position.entry_price,
-        )
-        fill_price = fill.average_price if fill else self._exchange_reference_price(
-            position.symbol)
+        fill: ExchangeFillSummary | None = None
+        for attempt in range(ENTRY_FILL_CONFIRM_ATTEMPTS):
+            fill = self._exchange_fill_for_order(
+                position.symbol,
+                order_id,
+                order_payload=order,
+            )
+            if fill is not None:
+                break
+            if attempt < ENTRY_FILL_CONFIRM_ATTEMPTS - 1:
+                time.sleep(ENTRY_FILL_CONFIRM_DELAY_SECONDS)
+        if fill is None:
+            raise RuntimeError(
+                f"Entry order {order_id or 'UNKNOWN'} for {position.symbol} was not confirmed filled "
+                f"after {ENTRY_FILL_CONFIRM_ATTEMPTS} attempts"
+            )
+        fill_price = fill.average_price
         position.entry_order_id = order_id
-        if fill and fill.fill_time:
+        if fill.fill_time:
             position.opened_at = fill.fill_time
         position.entry_price = fill_price
         position.mark(fill_price)
@@ -87,6 +100,37 @@ class BinanceFuturesExecution(BaseExecution):
         self.positions[position.symbol] = position
         return position
 
+    def _submit_entry_order(self, *, symbol: str, side: str, quantity: float) -> dict[str, Any]:
+        client_order_id = f"bot-entry-{uuid.uuid4().hex[:20]}"
+        last_error: Exception | None = None
+        for attempt in range(ENTRY_SUBMIT_ATTEMPTS):
+            try:
+                return self.client.futures_create_order(
+                    symbol=symbol,
+                    side=side,
+                    type="MARKET",
+                    quantity=quantity,
+                    newClientOrderId=client_order_id,
+                    newOrderRespType="RESULT",
+                )
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                try:
+                    recovered = self.client.futures_get_order_by_client_id(
+                        symbol, client_order_id)
+                except Exception:  # noqa: BLE001
+                    recovered = None
+                if _extract_order_id(recovered) is not None:
+                    return recovered
+                if attempt < ENTRY_SUBMIT_ATTEMPTS - 1:
+                    time.sleep(ENTRY_SUBMIT_DELAY_SECONDS)
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError(
+            f"Entry order submission for {symbol} failed after {ENTRY_SUBMIT_ATTEMPTS} attempts"
+        )
+
     def close_position(self, symbol: str, price: float, reason: str = "") -> Position | None:
         position = self.positions.get(symbol)
         if not position:
@@ -105,15 +149,17 @@ class BinanceFuturesExecution(BaseExecution):
             symbol,
             order_id,
             order_payload=order,
-            fallback_price=price,
         )
-        fill_price = fill.average_price if fill else self._exchange_reference_price(
-            symbol)
+        if fill is None:
+            raise RuntimeError(
+                f"Close order {order_id or 'UNKNOWN'} for {symbol} was not confirmed filled"
+            )
+        fill_price = fill.average_price
         self._cancel_protective_orders(symbol)
         self._cancel_exchange_algo_orders(symbol)
         self.positions.pop(symbol, None)
         position.exit_order_id = order_id
-        if fill and fill.fill_time:
+        if fill.fill_time:
             position.updated_at = fill.fill_time
         self._finalize_closed_position(
             position,
@@ -196,30 +242,12 @@ class BinanceFuturesExecution(BaseExecution):
         self.balance += pnl
         return pnl
 
-    def _filled_price_from_order(self, symbol: str, order: Any, fallback_price: float) -> float:
-        direct = _extract_fill_price(order)
-        if direct is not None and direct > 0:
-            return direct
-        order_id = _extract_order_id(order)
-        if order_id is None:
-            return fallback_price
-        try:
-            fetched = self.client.futures_get_order(
-                symbol=symbol, order_id=order_id)
-        except Exception:  # noqa: BLE001
-            return fallback_price
-        resolved = _extract_fill_price(fetched)
-        if resolved is not None and resolved > 0:
-            return resolved
-        return fallback_price
-
     def _exchange_fill_for_order(
         self,
         symbol: str,
         order_id: int | None,
         *,
         order_payload: Any,
-        fallback_price: float,
     ) -> ExchangeFillSummary | None:
         direct_price = _extract_fill_price(order_payload)
         if direct_price is not None and direct_price > 0:
@@ -238,28 +266,26 @@ class BinanceFuturesExecution(BaseExecution):
             for fill in fills:
                 if fill.order_id == order_id:
                     return fill
-        fetched_price = self._filled_price_from_order(
-            symbol, {"orderId": order_id}, fallback_price)
-        if fetched_price <= 0:
-            fetched_price = self._exchange_reference_price(symbol)
-        if fetched_price <= 0:
+        if order_id is None:
+            return None
+        try:
+            fetched = self.client.futures_get_order(
+                symbol=symbol, order_id=order_id)
+        except Exception:  # noqa: BLE001
+            return None
+        fetched_price = _extract_fill_price(fetched)
+        if fetched_price is None or fetched_price <= 0:
             return None
         return ExchangeFillSummary(
             symbol=symbol,
-            order_id=order_id or 0,
+            order_id=order_id,
             side="",
-            quantity=0.0,
+            quantity=_safe_float(fetched.get("executedQty")),
             average_price=fetched_price,
             realized_pnl=0.0,
-            fill_time_ms=0,
+            fill_time_ms=int(fetched.get("updateTime") or 0),
             fill_time="",
         )
-
-    def _exchange_reference_price(self, symbol: str) -> float:
-        try:
-            return float(self.client.futures_symbol_ticker(symbol=symbol).get("price") or 0.0)
-        except Exception:  # noqa: BLE001
-            return 0.0
 
     def _place_protective_orders(self, position: Position) -> list[int]:
         close_side = "SELL" if position.side == Side.LONG else "BUY"

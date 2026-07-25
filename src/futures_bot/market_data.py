@@ -169,6 +169,14 @@ class BinanceFuturesRESTClient:
             signed=True,
         )
 
+    def futures_get_order_by_client_id(self, symbol: str, client_order_id: str) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            "/fapi/v1/order",
+            {"symbol": symbol, "origClientOrderId": client_order_id},
+            signed=True,
+        )
+
     def futures_cancel_order(self, symbol: str, order_id: int) -> dict[str, Any]:
         return self._request(
             "DELETE",
