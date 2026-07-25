@@ -116,6 +116,24 @@ class TradingEngine:
         self.state.running = False
         self.state.started_at = ""
 
+    def clear_history(self) -> dict[str, int]:
+        if self.state.running or (self.thread and self.thread.is_alive()):
+            raise ValueError("Stop the bot before clearing history")
+        if self.execution.list_positions() or self.storage.list_open_trades():
+            raise ValueError(
+                "Close all open positions before clearing history")
+
+        cleared = self.storage.clear_history()
+        self.execution.realized_pnl = 0.0
+        self.execution.balance = self.execution.initial_equity
+        self.state.last_run_at = ""
+        self.state.last_error = ""
+        self.state.latest_actions.clear()
+        self.state.latest_scores.clear()
+        self.state.latest_reasons.clear()
+        self.state.halted_symbols.clear()
+        return cleared
+
     def pause(self) -> None:
         self.state.paused = True
 

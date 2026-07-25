@@ -242,6 +242,16 @@ class SQLiteStore:
                 (payload.get("created_at"), json.dumps(payload, sort_keys=True)),
             )
 
+    def clear_history(self) -> dict[str, int]:
+        with self.connection() as conn:
+            trade_count = int(conn.execute(
+                "SELECT COUNT(*) FROM trades").fetchone()[0])
+            snapshot_count = int(conn.execute(
+                "SELECT COUNT(*) FROM snapshots").fetchone()[0])
+            conn.execute("DELETE FROM trades")
+            conn.execute("DELETE FROM snapshots")
+        return {"trades": trade_count, "snapshots": snapshot_count}
+
     @staticmethod
     def _parse_metadata(raw: Any) -> dict[str, Any]:
         if not raw:

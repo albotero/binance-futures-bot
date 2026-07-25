@@ -507,6 +507,29 @@ class EngineTransitionTests(unittest.TestCase):
         self.assertIn("https://fapi.binance.com", self.engine.state.last_error)
         self.assertIn("/etc/resolv.conf", self.engine.state.last_error)
 
+    def test_clear_history_removes_trades_snapshots_and_resets_metrics(self) -> None:
+        self.engine._open_from_signal("BTCUSDT", 100.0, "long")
+        with patch("futures_bot.engine.BinanceMarketData.latest_price", return_value=110.0):
+            self.engine.manually_close("BTCUSDT")
+        self.engine.state.last_error = "old error"
+
+        cleared = self.engine.clear_history()
+
+        self.assertEqual(cleared, {"trades": 1, "snapshots": 1})
+        self.assertEqual(self.engine.storage.list_trades(), [])
+        self.assertEqual(self.engine.storage.list_snapshots(), [])
+        self.assertEqual(self.engine.snapshot().realized_pnl, 0.0)
+        self.assertEqual(self.engine.snapshot().equity,
+                         self.config.initial_equity)
+        self.assertEqual(self.engine.state.last_error, "")
+        self.assertEqual(self.engine.state.halted_symbols, set())
+
+    def test_clear_history_rejects_open_position(self) -> None:
+        self.engine._open_from_signal("BTCUSDT", 100.0, "long")
+
+        with self.assertRaisesRegex(ValueError, "Close all open positions"):
+            self.engine.clear_history()
+
 
 class BacktestTests(unittest.TestCase):
     def test_parse_backtest_duration_supports_long_ranges(self) -> None:
@@ -769,6 +792,40 @@ class BacktestTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), expected)
         order_check.assert_called_once_with(config)
+
+    def test_start_api_optionally_clears_history(self) -> None:
+        config = BotConfig(mode="paper")
+
+        class FakeEngine:
+            def __init__(self) -> None:
+                self.config = config
+                self.profile = StrategyProfile(name="default")
+                self.start_calls = 0
+                self.clear_calls = 0
+
+            def clear_history(self) -> dict[str, int]:
+                self.clear_calls += 1
+                return {"trades": 3, "snapshots": 12}
+
+            def start(self) -> None:
+                self.start_calls += 1
+
+        engine = FakeEngine()
+        client = TestClient(build_app(engine))
+
+        clear_response = client.post(
+            "/api/start", json={"clear_history": True})
+        keep_response = client.post(
+            "/api/start", json={"clear_history": False})
+
+        self.assertEqual(clear_response.status_code, 200)
+        self.assertEqual(clear_response.json()["cleared"], {
+                         "trades": 3, "snapshots": 12})
+        self.assertEqual(keep_response.status_code, 200)
+        self.assertEqual(keep_response.json()["cleared"], {
+                         "trades": 0, "snapshots": 0})
+        self.assertEqual(engine.clear_calls, 1)
+        self.assertEqual(engine.start_calls, 2)
 
     def test_backtest_run_returns_job_and_polls_to_completion(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

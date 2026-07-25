@@ -12,6 +12,7 @@ const state = {
   orderCheckLoading: false,
   orderCheckResult: null,
   orderCheckError: "",
+  dismissedRuntimeError: "",
 }
 
 const DISPLAY_TIME_ZONE = "America/Bogota"
@@ -177,7 +178,10 @@ function renderRuntimeAlert(payload) {
   const root = document.getElementById("runtimeAlert")
   const botState = payload.state || {}
   const lastError = String(botState.last_error || "").trim()
-  if (!lastError) {
+  if (!lastError || lastError === state.dismissedRuntimeError) {
+    if (!lastError) {
+      state.dismissedRuntimeError = ""
+    }
     root.className = "runtime-alert is-hidden"
     root.innerHTML = ""
     return
@@ -195,6 +199,7 @@ function renderRuntimeAlert(payload) {
 
   root.className = tone
   root.innerHTML = `
+    <button class="runtime-alert__dismiss" data-action="dismiss-runtime-error" aria-label="Dismiss error" title="Dismiss error">&times;</button>
     <div class="runtime-alert__eyebrow">Attention required</div>
     <div class="runtime-alert__body">
       <div>
@@ -918,6 +923,17 @@ async function runOrderCheckFromDashboard() {
   }
 }
 
+async function startBotFromDashboard() {
+  const clearHistory = window.confirm(
+    "Clear previous trade and chart history before starting?\n\nSelect OK to clear it, or Cancel to keep it.",
+  )
+  await request("/api/start", {
+    method: "POST",
+    body: JSON.stringify({ clear_history: clearHistory }),
+  })
+  await refresh()
+}
+
 async function pollBacktestJob(jobId) {
   while (true) {
     const payload = await request(`/api/backtest/jobs/${encodeURIComponent(jobId)}`)
@@ -986,8 +1002,16 @@ document.addEventListener("click", async (event) => {
   if (!action) {
     return
   }
+  if (action === "dismiss-runtime-error") {
+    state.dismissedRuntimeError = String(state.latestStatus?.state?.last_error || "").trim()
+    renderRuntimeAlert(state.latestStatus || {})
+    return
+  }
+  if (action === "start") {
+    await startBotFromDashboard()
+    return
+  }
   const endpointMap = {
-    start: "/api/start",
     stop: "/api/stop",
     pause: "/api/pause",
     resume: "/api/resume",

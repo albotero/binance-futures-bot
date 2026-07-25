@@ -221,9 +221,15 @@ def build_app(engine: TradingEngine | None = None) -> FastAPI:
         }
 
     @app.post("/api/start")
-    def start() -> dict:
+    def start(payload: dict | None = None) -> dict:
+        cleared = {"trades": 0, "snapshots": 0}
+        if _as_bool((payload or {}).get("clear_history", False)):
+            try:
+                cleared = bot.clear_history()
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
         bot.start()
-        return {"ok": True}
+        return {"ok": True, "cleared": cleared}
 
     @app.post("/api/stop")
     def stop() -> dict:
