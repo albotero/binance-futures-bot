@@ -7,7 +7,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -69,8 +69,16 @@ class BinanceFuturesRESTClient:
         request = Request(url, data=None if method ==
                           "GET" else b"", method=method, headers=headers)
         try:
-            with urlopen(request, timeout=30) as response:
-                return json.loads(response.read().decode())
+            for attempt in range(3):
+                try:
+                    with urlopen(request, timeout=30) as response:
+                        return json.loads(response.read().decode())
+                except HTTPError:
+                    raise
+                except URLError:
+                    if method != "GET" or attempt == 2:
+                        raise
+                    time.sleep(0.5 * (2 ** attempt))
         except HTTPError as exc:
             raw_body = ""
             error_code: int | None = None

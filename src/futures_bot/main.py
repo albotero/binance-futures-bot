@@ -9,6 +9,7 @@ from .backtest import compare_profiles, prefetch_backtest_cache, run_backtest_su
 from .api import build_app
 from .config import default_strategy_profile, load_bot_config, load_strategy_profile, save_strategy_profile
 from .engine import TradingEngine
+from .order_check import place_and_cancel_test_order
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -58,6 +59,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "sync-exchange-history",
         help="Backfill local trade history from Binance user-trade fills",
+    )
+    subparsers.add_parser(
+        "test-order",
+        help="Place and immediately cancel a small order for the first BOT_SYMBOLS pair",
     )
 
     return parser
@@ -112,6 +117,15 @@ def main() -> None:
         )
         print(
             f"Backtest cache ready: symbols={result['symbols']} loaded={result['loaded']} fetched={result['fetched']}"
+        )
+        return
+
+    if args.command == "test-order":
+        result = place_and_cancel_test_order(config)
+        print(
+            f"Order check complete: environment={result['environment']} "
+            f"symbol={result['symbol']} order_id={result['order_id']} "
+            f"created={result['create_status']} canceled={result['cancel_status']}"
         )
         return
 

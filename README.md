@@ -11,6 +11,7 @@ This project is tooling, not financial advice.
 - Reconciles exchange state back into the local DB
 - Backfills stored trade history from Binance user-trade fills for more accurate entry/exit prices
 - Caches backtest candle history locally so repeated parameter tests are much faster
+- Checks authenticated order creation and cancellation from the CLI or dashboard
 
 ## Safety
 
@@ -189,6 +190,62 @@ Backfill local trade history from Binance fills:
 futures-bot sync-exchange-history
 ```
 
+Check order creation and cancellation for the first pair in `BOT_SYMBOLS`:
+
+```bash
+futures-bot test-order
+
+# Or run directly:
+PYTHONPATH=src .venv/bin/python -m futures_bot.main test-order
+```
+
+## Exchange Order Check
+
+The order check verifies authenticated order creation and cancellation against
+the configured Binance Futures environment. It always uses the first pair in
+the comma-separated `BOT_SYMBOLS` list. For example, this selects `BTCUSDC`:
+
+```dotenv
+BOT_SYMBOLS=BTCUSDC,ETHUSDC,DOGEUSDC
+```
+
+The check:
+
+1. Loads the current ticker and exchange filters for the selected pair.
+2. Calculates a quantity that satisfies Binance lot-size and minimum-notional rules.
+3. Places a small post-only (`GTX`) limit buy below the current market.
+4. Immediately cancels the returned order ID.
+5. Reports the environment, symbol, order ID, and create/cancel statuses.
+
+Run it from any of these surfaces:
+
+- CLI: `futures-bot test-order`
+- Dashboard: select **Check Order** in the top control bar and confirm the prompt
+- API: `POST /api/test-order`
+
+Example API request:
+
+```bash
+curl -X POST http://127.0.0.1:8010/api/test-order
+```
+
+Use testnet whenever possible:
+
+```dotenv
+BINANCE_TESTNET=true
+BINANCE_API_KEY=your_testnet_key
+BINANCE_API_SECRET=your_testnet_secret
+```
+
+Important safety details:
+
+- This is a real exchange order check, even when `BOT_MODE=paper`.
+- Mainnet checks are refused unless `BOT_LIVE_TRADING_CONFIRMED=true`.
+- A post-only order cannot execute immediately as a taker, but any accepted
+  resting order can theoretically fill before its cancellation is processed.
+- The command fails if `BOT_SYMBOLS` is empty, credentials are missing, or the
+  first configured pair is unavailable in the selected environment.
+
 ## Backtest Workflow
 
 Recommended loop:
@@ -252,6 +309,8 @@ Backtest speed:
 
 Live safety:
 
+- `BINANCE_API_KEY`
+- `BINANCE_API_SECRET`
 - `BOT_LIVE_TRADING_CONFIRMED`
 - `BINANCE_TESTNET`
 - `BINANCE_BASE_URL`
@@ -294,6 +353,7 @@ Main API endpoints:
 - `POST /api/pause`
 - `POST /api/resume`
 - `POST /api/run-once`
+- `POST /api/test-order`
 - `POST /api/trades/{symbol}/close`
 - `GET /api/strategies`
 - `POST /api/strategies/save`

@@ -9,6 +9,9 @@ const state = {
   backtestError: "",
   backtestLoading: false,
   backtestForm: null,
+  orderCheckLoading: false,
+  orderCheckResult: null,
+  orderCheckError: "",
 }
 
 const DISPLAY_TIME_ZONE = "America/Bogota"
@@ -338,6 +341,7 @@ function renderHeroControls() {
   const stopButton = document.getElementById("stopButton")
   const pauseButton = document.getElementById("pauseButton")
   const runOnceButton = document.getElementById("runOnceButton")
+  const testOrderButton = document.getElementById("testOrderButton")
   const runtimeTimer = document.getElementById("runtimeTimer")
 
   if (startButton) {
@@ -354,9 +358,38 @@ function renderHeroControls() {
   if (runOnceButton) {
     runOnceButton.disabled = running
   }
+  if (testOrderButton) {
+    testOrderButton.disabled = state.orderCheckLoading
+    testOrderButton.textContent = state.orderCheckLoading ? "Checking..." : "Check Order"
+  }
   if (runtimeTimer) {
     runtimeTimer.textContent = running ? formatRuntime(botState.started_at) : "Stopped"
   }
+}
+
+function renderOrderCheckStatus() {
+  const root = document.getElementById("orderCheckStatus")
+  if (!root) {
+    return
+  }
+  if (state.orderCheckLoading) {
+    root.className = "order-check-status"
+    root.textContent = "Creating and canceling the order..."
+    return
+  }
+  if (state.orderCheckError) {
+    root.className = "order-check-status error"
+    root.textContent = state.orderCheckError
+    return
+  }
+  if (state.orderCheckResult) {
+    const result = state.orderCheckResult
+    root.className = "order-check-status success"
+    root.textContent = `${result.environment} ${result.symbol}: order ${result.order_id} created (${result.create_status}) and canceled (${result.cancel_status}).`
+    return
+  }
+  root.className = "order-check-status is-hidden"
+  root.textContent = ""
 }
 
 function renderHistorySummary() {
@@ -856,6 +889,35 @@ async function runBacktestFromDashboard() {
   renderBacktestResult()
 }
 
+async function runOrderCheckFromDashboard() {
+  if (state.orderCheckLoading) {
+    return
+  }
+  const symbol = state.latestExchange?.configured_symbols?.[0] || "the first configured symbol"
+  const environment = state.latestExchange?.testnet ? "testnet" : "mainnet"
+  const confirmed = window.confirm(
+    `Place and immediately cancel a small post-only order for ${symbol} on ${environment}?`,
+  )
+  if (!confirmed) {
+    return
+  }
+
+  state.orderCheckLoading = true
+  state.orderCheckResult = null
+  state.orderCheckError = ""
+  renderHeroControls()
+  renderOrderCheckStatus()
+  try {
+    state.orderCheckResult = await request("/api/test-order", { method: "POST" })
+  } catch (error) {
+    state.orderCheckError = parseApiError(error.message || "Order check failed")
+  } finally {
+    state.orderCheckLoading = false
+    renderHeroControls()
+    renderOrderCheckStatus()
+  }
+}
+
 async function pollBacktestJob(jobId) {
   while (true) {
     const payload = await request(`/api/backtest/jobs/${encodeURIComponent(jobId)}`)
@@ -935,6 +997,11 @@ document.addEventListener("click", async (event) => {
   if (endpointMap[action]) {
     await request(endpointMap[action], { method: "POST" })
     await refresh()
+    return
+  }
+
+  if (action === "test-order") {
+    await runOrderCheckFromDashboard()
     return
   }
 

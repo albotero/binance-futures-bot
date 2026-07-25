@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Futures Bot Control Room</title>
-    <link rel="stylesheet" href="/static/style.css?v=20260724-alert-banner" />
+    <link rel="stylesheet" href="/static/style.css?v=20260724-order-check" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   </head>
   <body>
@@ -22,11 +22,13 @@
           <button id="startButton" data-action="start">Start</button>
           <div id="runtimeTimer" class="pill runtime-timer">Stopped</div>
           <button id="runOnceButton" data-action="run-once" class="secondary">Run Once</button>
+          <button id="testOrderButton" data-action="test-order" class="ghost">Check Order</button>
           <button id="pauseButton" data-action="pause" class="ghost">Pause</button>
           <button id="stopButton" data-action="stop" class="danger">Stop</button>
         </div>
       </section>
 
+      <section id="orderCheckStatus" class="order-check-status is-hidden" aria-live="polite"></section>
       <section id="runtimeAlert" class="runtime-alert is-hidden" aria-live="polite"></section>
 
       <section class="metrics" id="metrics"></section>
@@ -110,6 +112,6 @@
         </article>
       </section>
     </main>
-    <script src="/static/app.js?v=20260724-alert-banner"></script>
+    <script src="/static/app.js?v=20260724-order-check"></script>
   </body>
 </html>

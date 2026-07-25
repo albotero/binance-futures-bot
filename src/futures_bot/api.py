@@ -13,6 +13,7 @@ from .backtest import compare_profiles, parse_backtest_duration, run_backtest_su
 from .config import default_strategy_profile, load_bot_config, load_strategy_profile
 from .engine import TradingEngine
 from .models import BotConfig, StrategyProfile
+from .order_check import place_and_cancel_test_order
 
 
 def build_app(engine: TradingEngine | None = None) -> FastAPI:
@@ -214,6 +215,7 @@ def build_app(engine: TradingEngine | None = None) -> FastAPI:
             "candle_style": bot.config.candle_style,
             "leverage": bot.config.leverage,
             "max_leverage": bot.config.max_leverage,
+            "configured_symbols": list(bot.config.symbols),
             "tracked_symbols": symbols,
             "latest_prices": prices,
         }
@@ -273,6 +275,15 @@ def build_app(engine: TradingEngine | None = None) -> FastAPI:
     def run_once() -> dict:
         bot.run_once()
         return {"ok": True}
+
+    @app.post("/api/test-order")
+    def test_order() -> dict:
+        try:
+            return place_and_cancel_test_order(bot.config)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.get("/api/config")
     def config_view() -> dict:

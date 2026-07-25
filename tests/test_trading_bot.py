@@ -9,14 +9,17 @@ from futures_bot.execution_live import BinanceFuturesExecution, _group_exchange_
 from futures_bot.engine import TradingEngine
 from futures_bot.config import default_strategy_profile
 from futures_bot.backtest import BacktestReport, BacktestSymbolReport, BacktestSuiteResult, _open_backtest_position, compare_profiles, fetch_backtest_candles, parse_backtest_duration, run_backtest_suite
-from futures_bot.market_data import BinanceAPIError
+from futures_bot.main import build_parser
+from futures_bot.market_data import BinanceAPIError, BinanceFuturesRESTClient
+from futures_bot.order_check import place_and_cancel_test_order
 
 import tempfile
 import unittest
 import time
 from pathlib import Path
 import sys
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+from urllib.error import URLError
 from fastapi.testclient import TestClient
 
 
@@ -37,6 +40,83 @@ def make_candles(closes: list[float]) -> list[dict[str, float]]:
             "volume": 100.0,
         })
     return candles
+
+
+class MarketDataTests(unittest.TestCase):
+    @patch("futures_bot.market_data.time.sleep")
+    @patch("futures_bot.market_data.urlopen")
+    def test_request_retries_transient_url_error(self, mock_urlopen: MagicMock, mock_sleep: MagicMock) -> None:
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = b'{"symbol":"DOGEUSDC","price":"0.12"}'
+        mock_urlopen.side_effect = [URLError("Try again"), response]
+
+        result = BinanceFuturesRESTClient().futures_symbol_ticker("DOGEUSDC")
+
+        self.assertEqual(result["symbol"], "DOGEUSDC")
+        self.assertEqual(mock_urlopen.call_count, 2)
+        mock_sleep.assert_called_once()
+
+    def test_order_check_uses_first_configured_symbol_and_cancels(self) -> None:
+        config = BotConfig(
+            symbols=["DOGEUSDC", "BTCUSDC"],
+            testnet=True,
+            api_key="key",
+            api_secret="secret",
+        )
+
+        class FakeClient:
+            def __init__(self) -> None:
+                self.created: dict | None = None
+                self.canceled: tuple[str, int] | None = None
+
+            def futures_exchange_info(self) -> dict:
+                return {
+                    "symbols": [{
+                        "symbol": "DOGEUSDC",
+                        "filters": [
+                            {"filterType": "PRICE_FILTER", "tickSize": "0.00001"},
+                            {"filterType": "LOT_SIZE",
+                                "stepSize": "1", "minQty": "1"},
+                            {"filterType": "MIN_NOTIONAL", "notional": "5"},
+                            {"filterType": "PERCENT_PRICE",
+                                "multiplierDown": "0.9500"},
+                        ],
+                    }],
+                }
+
+            def futures_symbol_ticker(self, symbol: str) -> dict:
+                self.assert_symbol(symbol)
+                return {"symbol": symbol, "price": "0.12"}
+
+            def futures_create_order(self, **params: object) -> dict:
+                self.assert_symbol(str(params.get("symbol")))
+                self.created = params
+                return {"symbol": "DOGEUSDC", "orderId": 42, "status": "NEW"}
+
+            def futures_cancel_order(self, symbol: str, order_id: int) -> dict:
+                self.assert_symbol(symbol)
+                self.canceled = (symbol, order_id)
+                return {"symbol": symbol, "orderId": order_id, "status": "CANCELED"}
+
+            @staticmethod
+            def assert_symbol(symbol: str) -> None:
+                if symbol != "DOGEUSDC":
+                    raise AssertionError(f"Unexpected symbol: {symbol}")
+
+        client = FakeClient()
+
+        result = place_and_cancel_test_order(config, client=client)
+
+        self.assertEqual(result["symbol"], "DOGEUSDC")
+        self.assertEqual(client.created["symbol"], "DOGEUSDC")
+        self.assertEqual(client.created["type"], "LIMIT")
+        self.assertEqual(client.canceled, ("DOGEUSDC", 42))
+        self.assertEqual(result["cancel_status"], "CANCELED")
+
+    def test_cli_registers_test_order_command(self) -> None:
+        args = build_parser().parse_args(["test-order"])
+
+        self.assertEqual(args.command, "test-order")
 
 
 class IndicatorTests(unittest.TestCase):
@@ -616,6 +696,37 @@ class BacktestTests(unittest.TestCase):
             self.assertEqual(symbols, ["BTCUSDC", "ETHUSDC"])
             self.assertEqual(report.requested_symbols, 2)
             self.assertEqual(report.counted_symbols, 2)
+
+    def test_order_check_api_uses_engine_config(self) -> None:
+        config = BotConfig(
+            symbols=["DOGEUSDC", "BTCUSDC"],
+            testnet=True,
+            api_key="key",
+            api_secret="secret",
+        )
+
+        class FakeEngine:
+            def __init__(self) -> None:
+                self.config = config
+                self.profile = StrategyProfile(name="default")
+
+        expected = {
+            "ok": True,
+            "environment": "testnet",
+            "symbol": "DOGEUSDC",
+            "order_id": 42,
+            "create_status": "NEW",
+            "cancel_status": "CANCELED",
+        }
+        app = build_app(FakeEngine())
+        client = TestClient(app)
+
+        with patch("futures_bot.api.place_and_cancel_test_order", return_value=expected) as order_check:
+            response = client.post("/api/test-order")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), expected)
+        order_check.assert_called_once_with(config)
 
     def test_backtest_run_returns_job_and_polls_to_completion(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
