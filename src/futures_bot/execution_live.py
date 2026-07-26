@@ -40,6 +40,9 @@ class BinanceFuturesExecution(BaseExecution):
     client: BinanceFuturesRESTClient = field(init=False)
     protective_orders: dict[str, list[int]] = field(
         default_factory=dict, init=False)
+    protective_order_roles: dict[str, dict[str, int]] = field(
+        default_factory=dict, init=False)
+    protection_stages: dict[str, str] = field(default_factory=dict, init=False)
     symbol_filters: dict[str, tuple[float | None, float | None]] = field(
         default_factory=dict, init=False
     )
@@ -48,6 +51,17 @@ class BinanceFuturesExecution(BaseExecution):
         BaseExecution.__post_init__(self)
         self.client = BinanceFuturesRESTClient(
             self.api_key, self.api_secret, self.base_url)
+
+    def mark_price(self, symbol: str, price: float) -> None:
+        BaseExecution.mark_price(self, symbol, price)
+        position = self.positions.get(symbol)
+        if (
+            position
+            and position.trailing_stage_enabled
+            and position.hybrid_trailing_enabled
+            and self._uses_exchange_protection()
+        ):
+            self._sync_hybrid_exchange_protection(position)
 
     def open_position(self, position: Position) -> Position:
         requested_entry = position.entry_price
@@ -97,6 +111,8 @@ class BinanceFuturesExecution(BaseExecution):
                     f"Failed to place protective TP/SL orders for {position.symbol}: {exc}") from exc
         else:
             self.protective_orders[position.symbol] = []
+            self.protective_order_roles[position.symbol] = {}
+            self.protection_stages[position.symbol] = "local_only"
         self.positions[position.symbol] = position
         return position
 
@@ -347,11 +363,109 @@ class BinanceFuturesExecution(BaseExecution):
                 trailing_order = None
 
         order_ids: list[int] = []
-        for order in (stop_order, take_profit_order, trailing_order):
+        roles: dict[str, int] = {}
+        for role, order in (
+            ("stop", stop_order),
+            ("take_profit", take_profit_order),
+            ("trailing", trailing_order),
+        ):
             order_id = _extract_order_id(order)
             if order_id is not None:
                 order_ids.append(order_id)
+                roles[role] = order_id
+        self.protective_order_roles[position.symbol] = roles
+        self.protection_stages[position.symbol] = "initial"
         return order_ids
+
+    def _sync_hybrid_exchange_protection(self, position: Position) -> None:
+        symbol = position.symbol
+        roles = self.protective_order_roles.setdefault(symbol, {})
+        stage = self.protection_stages.get(symbol, "initial")
+
+        if position.break_even_applied and stage == "initial":
+            replacement = self._place_stop_order(position)
+            replacement_id = _extract_order_id(replacement)
+            if replacement_id is None:
+                raise RuntimeError(
+                    f"Binance did not return an ID for the break-even stop on {symbol}")
+            old_stop_id = roles.get("stop")
+            roles["stop"] = replacement_id
+            self.protection_stages[symbol] = "break_even"
+            self._refresh_protective_order_ids(symbol)
+            if old_stop_id is not None:
+                self._cancel_algo_order(symbol, old_stop_id)
+
+        if not position.trailing_armed:
+            return
+
+        if "trailing" not in roles:
+            trailing = self._place_hybrid_trailing_order(position)
+            trailing_id = _extract_order_id(trailing)
+            if trailing_id is None:
+                raise RuntimeError(
+                    f"Binance did not return an ID for the trailing stop on {symbol}")
+            roles["trailing"] = trailing_id
+            self._refresh_protective_order_ids(symbol)
+
+        take_profit_id = roles.get("take_profit")
+        if take_profit_id is not None:
+            if not self._cancel_algo_order(symbol, take_profit_id):
+                return
+            roles.pop("take_profit", None)
+
+        position.take_profit_enabled = False
+        self.protection_stages[symbol] = "trailing"
+        self._refresh_protective_order_ids(symbol)
+
+    def _place_stop_order(self, position: Position) -> dict[str, Any]:
+        close_side = "SELL" if position.side == Side.LONG else "BUY"
+        stop_price = self._format_protective_price(
+            position.symbol,
+            position.stop_loss_price,
+            round_down=(position.side == Side.LONG),
+        )
+        return self.client.futures_place_algo_order(
+            algoType="CONDITIONAL",
+            symbol=position.symbol,
+            side=close_side,
+            type="STOP_MARKET",
+            quantity=self._format_quantity(position.symbol, position.quantity),
+            triggerPrice=stop_price,
+            reduceOnly=True,
+            workingType="MARK_PRICE",
+        )
+
+    def _place_hybrid_trailing_order(self, position: Position) -> dict[str, Any]:
+        close_side = "SELL" if position.side == Side.LONG else "BUY"
+        callback_rate = round(
+            min(
+                max(self.trailing_stop_pct, BINANCE_TRAILING_CALLBACK_MIN),
+                BINANCE_TRAILING_CALLBACK_MAX,
+            ),
+            2,
+        )
+        return self.client.futures_place_algo_order(
+            algoType="CONDITIONAL",
+            symbol=position.symbol,
+            side=close_side,
+            type="TRAILING_STOP_MARKET",
+            quantity=self._format_quantity(position.symbol, position.quantity),
+            callbackRate=callback_rate,
+            reduceOnly=True,
+            workingType="MARK_PRICE",
+        )
+
+    def _refresh_protective_order_ids(self, symbol: str) -> None:
+        self.protective_orders[symbol] = list(
+            self.protective_order_roles.get(symbol, {}).values())
+
+    def _cancel_algo_order(self, symbol: str, order_id: int) -> bool:
+        try:
+            self.client.futures_cancel_algo_order(
+                symbol=symbol, algo_id=order_id)
+            return True
+        except Exception:  # noqa: BLE001
+            return False
 
     def _realign_protective_prices(self, position: Position, requested_entry: float, fill_price: float) -> None:
         if requested_entry <= 0 or fill_price <= 0:
@@ -384,6 +498,8 @@ class BinanceFuturesExecution(BaseExecution):
 
     def _cancel_protective_orders(self, symbol: str) -> None:
         order_ids = self.protective_orders.pop(symbol, [])
+        self.protective_order_roles.pop(symbol, None)
+        self.protection_stages.pop(symbol, None)
         for order_id in order_ids:
             try:
                 self.client.futures_cancel_algo_order(

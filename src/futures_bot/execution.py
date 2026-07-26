@@ -26,6 +26,7 @@ class BaseExecution:
     initial_equity: float
     trailing_stop_pct: float = 0.0
     trailing_stage_enabled: bool = False
+    hybrid_trailing_enabled: bool = False
     trailing_break_even_r: float = 0.8
     trailing_activation_r: float = 1.2
     trailing_fee_buffer_pct: float = 0.04

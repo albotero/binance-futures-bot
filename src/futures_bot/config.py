@@ -72,6 +72,8 @@ def load_bot_config() -> BotConfig:
         "BOT_TRAILING_STOP_PCT", config.trailing_stop_pct)
     config.trailing_stage_enabled = _read_bool(
         "BOT_TRAILING_STAGE_ENABLED", config.trailing_stage_enabled)
+    config.hybrid_trailing_enabled = _read_bool(
+        "BOT_HYBRID_TRAILING_ENABLED", config.hybrid_trailing_enabled)
     config.trailing_break_even_r = _read_float(
         "BOT_TRAILING_BREAK_EVEN_R", config.trailing_break_even_r)
     config.trailing_activation_r = _read_float(

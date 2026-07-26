@@ -69,6 +69,7 @@ class TradingEngine:
                 initial_equity=config.initial_equity,
                 trailing_stop_pct=config.trailing_stop_pct,
                 trailing_stage_enabled=config.trailing_stage_enabled,
+                hybrid_trailing_enabled=config.hybrid_trailing_enabled,
                 trailing_break_even_r=config.trailing_break_even_r,
                 trailing_activation_r=config.trailing_activation_r,
                 trailing_fee_buffer_pct=config.trailing_fee_buffer_pct,
@@ -81,6 +82,7 @@ class TradingEngine:
             initial_equity=config.initial_equity,
             trailing_stop_pct=config.trailing_stop_pct,
             trailing_stage_enabled=config.trailing_stage_enabled,
+            hybrid_trailing_enabled=config.hybrid_trailing_enabled,
             trailing_break_even_r=config.trailing_break_even_r,
             trailing_activation_r=config.trailing_activation_r,
             trailing_fee_buffer_pct=config.trailing_fee_buffer_pct,
@@ -90,6 +92,16 @@ class TradingEngine:
         mode = self.config.mode.strip().lower()
         if mode not in {"paper", "live"}:
             raise ValueError("BOT_MODE must be either 'paper' or 'live'")
+        if self.config.hybrid_trailing_enabled and not self.config.trailing_stage_enabled:
+            raise ValueError(
+                "BOT_HYBRID_TRAILING_ENABLED requires BOT_TRAILING_STAGE_ENABLED=true")
+        if (
+            mode == "live"
+            and self.config.hybrid_trailing_enabled
+            and self.config.live_protection_mode != "local_and_exchange"
+        ):
+            raise ValueError(
+                "Live hybrid trailing requires BOT_LIVE_PROTECTION_MODE=local_and_exchange")
         if mode != "live":
             return
         if self.config.testnet:
@@ -497,6 +509,7 @@ class TradingEngine:
             take_profit_price=take_profit_price,
             trailing_stop_price=trailing_stop_price,
             trailing_stage_enabled=self.config.trailing_stage_enabled,
+            hybrid_trailing_enabled=self.config.hybrid_trailing_enabled,
             trailing_break_even_r=self.config.trailing_break_even_r,
             trailing_activation_r=self.config.trailing_activation_r,
             trailing_fee_buffer_pct=self.config.trailing_fee_buffer_pct,

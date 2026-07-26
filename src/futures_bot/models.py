@@ -88,6 +88,7 @@ class BotConfig:
     take_profit_pct: float = 3.0
     trailing_stop_pct: float = 1.0
     trailing_stage_enabled: bool = False
+    hybrid_trailing_enabled: bool = False
     trailing_break_even_r: float = 0.8
     trailing_activation_r: float = 1.2
     trailing_fee_buffer_pct: float = 0.04
@@ -168,12 +169,14 @@ class Position:
     entry_order_id: int | None = None
     exit_order_id: int | None = None
     trailing_stage_enabled: bool = False
+    hybrid_trailing_enabled: bool = False
     trailing_break_even_r: float = 0.8
     trailing_activation_r: float = 1.2
     trailing_fee_buffer_pct: float = 0.04
     initial_stop_loss_price: float = 0.0
     trailing_armed: bool = False
     break_even_applied: bool = False
+    take_profit_enabled: bool = True
     opened_at: str = field(default_factory=iso)
     updated_at: str = field(default_factory=iso)
     unrealized_pnl: float = 0.0
@@ -222,6 +225,8 @@ class Position:
 
             if r_multiple >= self.trailing_activation_r:
                 self.trailing_armed = True
+                if self.hybrid_trailing_enabled:
+                    self.take_profit_enabled = False
                 candidate = self.current_price * (1 - trailing_pct / 100)
                 floor = self.stop_loss_price
                 if self.trailing_stop_price <= 0:
@@ -244,6 +249,8 @@ class Position:
 
         if r_multiple >= self.trailing_activation_r:
             self.trailing_armed = True
+            if self.hybrid_trailing_enabled:
+                self.take_profit_enabled = False
             candidate = self.current_price * (1 + trailing_pct / 100)
             ceiling = self.stop_loss_price
             if self.trailing_stop_price <= 0:
@@ -274,14 +281,14 @@ class Position:
         if self.side == Side.LONG:
             if self.current_price <= self.stop_loss_price:
                 return True, TradeStatus.STOP_LOSS.value
-            if self.current_price >= self.take_profit_price:
+            if self.take_profit_enabled and self.current_price >= self.take_profit_price:
                 return True, TradeStatus.TAKE_PROFIT.value
             if trailing_active and self.current_price <= self.trailing_stop_price:
                 return True, TradeStatus.TRAILING_STOP.value
         else:
             if self.current_price >= self.stop_loss_price:
                 return True, TradeStatus.STOP_LOSS.value
-            if self.current_price <= self.take_profit_price:
+            if self.take_profit_enabled and self.current_price <= self.take_profit_price:
                 return True, TradeStatus.TAKE_PROFIT.value
             if trailing_active and self.current_price >= self.trailing_stop_price:
                 return True, TradeStatus.TRAILING_STOP.value

@@ -224,6 +224,25 @@ class EngineTransitionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "BOT_MODE must be either"):
             TradingEngine(invalid_config)
 
+    def test_hybrid_trailing_requires_staged_exchange_protection(self) -> None:
+        with self.assertRaisesRegex(ValueError, "requires BOT_TRAILING_STAGE_ENABLED"):
+            TradingEngine(BotConfig(
+                mode="paper",
+                hybrid_trailing_enabled=True,
+                trailing_stage_enabled=False,
+                db_path=str(Path(self.temp_dir.name) / "hybrid-stage.db"),
+            ))
+
+        with self.assertRaisesRegex(ValueError, "requires BOT_LIVE_PROTECTION_MODE"):
+            TradingEngine(BotConfig(
+                mode="live",
+                testnet=True,
+                hybrid_trailing_enabled=True,
+                trailing_stage_enabled=True,
+                live_protection_mode="local_only",
+                db_path=str(Path(self.temp_dir.name) / "hybrid-protection.db"),
+            ))
+
     def test_position_reversal_closes_and_reopens(self) -> None:
         self.engine._open_from_signal("BTCUSDT", 100.0, "long")
 
@@ -1584,6 +1603,161 @@ class LiveExecutionTests(unittest.TestCase):
         self.assertIn("STOP_MARKET", algo_types)
         self.assertIn("TAKE_PROFIT_MARKET", algo_types)
         self.assertNotIn("TRAILING_STOP_MARKET", algo_types)
+
+    def test_hybrid_trailing_promotes_stop_then_replaces_fixed_take_profit(self) -> None:
+        execution = BinanceFuturesExecution(
+            initial_equity=1000.0,
+            trailing_stop_pct=1.6,
+            trailing_stage_enabled=True,
+            hybrid_trailing_enabled=True,
+            trailing_break_even_r=0.8,
+            trailing_activation_r=1.2,
+        )
+
+        class FakeClient:
+            def __init__(self) -> None:
+                self.algo_orders: list[dict] = []
+                self.canceled: list[int] = []
+                self.stop_orders = 0
+
+            def futures_change_leverage(self, symbol: str, leverage: int) -> dict:
+                return {"symbol": symbol, "leverage": leverage}
+
+            def futures_create_order(self, **params: dict) -> dict:
+                return {"orderId": 330, "avgPrice": "100.0"}
+
+            def futures_place_algo_order(self, **params: dict) -> dict:
+                self.algo_orders.append(params)
+                if params.get("type") == "STOP_MARKET":
+                    self.stop_orders += 1
+                    return {"algoId": 331 if self.stop_orders == 1 else 334}
+                if params.get("type") == "TAKE_PROFIT_MARKET":
+                    return {"algoId": 332}
+                if params.get("type") == "TRAILING_STOP_MARKET":
+                    return {"algoId": 333}
+                return {"algoId": 399}
+
+            def futures_cancel_algo_order(self, symbol: str, algo_id: int) -> dict:
+                self.canceled.append(algo_id)
+                return {"symbol": symbol, "algoId": algo_id}
+
+            def futures_open_algo_orders(self, symbol: str) -> list[dict]:
+                return []
+
+            def futures_get_order(self, symbol: str, order_id: int) -> dict:
+                return {"symbol": symbol, "orderId": order_id, "avgPrice": "0"}
+
+        fake_client = FakeClient()
+        execution.client = fake_client  # type: ignore[assignment]
+        position = execution.open_position(
+            Position(
+                symbol="BTCUSDT",
+                side=Side.LONG,
+                quantity=0.01,
+                entry_price=100.0,
+                current_price=100.0,
+                leverage=3,
+                strategy="test",
+                stop_loss_price=95.0,
+                take_profit_price=110.0,
+                trailing_stop_price=96.0,
+                trailing_stage_enabled=True,
+                hybrid_trailing_enabled=True,
+                trailing_break_even_r=0.8,
+                trailing_activation_r=1.2,
+                initial_stop_loss_price=95.0,
+            )
+        )
+
+        execution.mark_price("BTCUSDT", 104.0)
+
+        self.assertTrue(position.break_even_applied)
+        self.assertFalse(position.trailing_armed)
+        self.assertTrue(position.take_profit_enabled)
+        self.assertEqual(fake_client.canceled, [331])
+        self.assertEqual(
+            execution.protective_order_roles["BTCUSDT"]["stop"], 334)
+
+        execution.mark_price("BTCUSDT", 106.0)
+
+        trailing_order = next(
+            item for item in fake_client.algo_orders if item.get("type") == "TRAILING_STOP_MARKET"
+        )
+        self.assertEqual(trailing_order["callbackRate"], 1.6)
+        self.assertNotIn("activatePrice", trailing_order)
+        self.assertTrue(position.trailing_armed)
+        self.assertFalse(position.take_profit_enabled)
+        self.assertEqual(fake_client.canceled, [331, 332])
+        self.assertEqual(
+            execution.protective_order_roles["BTCUSDT"],
+            {"stop": 334, "trailing": 333},
+        )
+
+        execution.mark_price("BTCUSDT", 111.0)
+        should_close, _ = position.should_close()
+        self.assertFalse(should_close)
+
+    def test_hybrid_trailing_retries_take_profit_cancellation(self) -> None:
+        execution = BinanceFuturesExecution(
+            initial_equity=1000.0,
+            trailing_stop_pct=1.6,
+            trailing_stage_enabled=True,
+            hybrid_trailing_enabled=True,
+        )
+        position = Position(
+            symbol="BTCUSDT",
+            side=Side.LONG,
+            quantity=0.01,
+            entry_price=100.0,
+            current_price=106.0,
+            leverage=3,
+            strategy="test",
+            stop_loss_price=100.04,
+            take_profit_price=110.0,
+            trailing_stop_price=100.04,
+            trailing_stage_enabled=True,
+            hybrid_trailing_enabled=True,
+            initial_stop_loss_price=95.0,
+            break_even_applied=True,
+            trailing_armed=True,
+            take_profit_enabled=False,
+        )
+
+        class FakeClient:
+            def __init__(self) -> None:
+                self.cancel_calls = 0
+                self.algo_orders: list[dict] = []
+
+            def futures_cancel_algo_order(self, symbol: str, algo_id: int) -> dict:
+                self.cancel_calls += 1
+                if self.cancel_calls == 1:
+                    raise RuntimeError("temporary cancellation failure")
+                return {"symbol": symbol, "algoId": algo_id}
+
+            def futures_place_algo_order(self, **params: dict) -> dict:
+                self.algo_orders.append(params)
+                return {"algoId": 999}
+
+        fake_client = FakeClient()
+        execution.client = fake_client  # type: ignore[assignment]
+        execution.positions[position.symbol] = position
+        execution.protective_order_roles[position.symbol] = {
+            "stop": 341,
+            "take_profit": 342,
+            "trailing": 343,
+        }
+        execution.protective_orders[position.symbol] = [341, 342, 343]
+        execution.protection_stages[position.symbol] = "break_even"
+
+        execution.mark_price(position.symbol, 106.0)
+        self.assertIn(
+            "take_profit", execution.protective_order_roles[position.symbol])
+
+        execution.mark_price(position.symbol, 106.0)
+        self.assertNotIn(
+            "take_profit", execution.protective_order_roles[position.symbol])
+        self.assertEqual(fake_client.cancel_calls, 2)
+        self.assertEqual(fake_client.algo_orders, [])
 
     def test_live_orders_use_symbol_tick_and_step_filters(self) -> None:
         execution = BinanceFuturesExecution(initial_equity=1000.0)

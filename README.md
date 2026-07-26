@@ -291,6 +291,92 @@ For live mode:
 - external/manual exchange closes are reconciled from Binance user-trade history when available
 - `sync-exchange-history` can backfill historical rows in `data/bot.db`
 
+## TP, SL, And Trailing Modes
+
+### Initial SL And TP Levels
+
+When a strategy produces an exit plan, the bot derives the initial stop loss
+from recent swing levels and average candle range. Take profit is then derived
+from that risk distance and `BOT_RISK_REWARD_RATIO`. Strategy-derived levels
+take precedence over the fallback percentages.
+
+When no strategy exit plan is available:
+
+- `BOT_STOP_LOSS_PCT` sets the initial stop distance from entry.
+- `BOT_RISK_REWARD_RATIO` sets take profit as a multiple of that stop distance.
+- `BOT_TAKE_PROFIT_PCT` is currently loaded for compatibility but is not used
+  to price live or backtest take-profit orders.
+
+The bot sizes quantity from the initial stop distance and
+`BOT_RISK_PER_TRADE_PCT`. Widening a stop normally reduces quantity rather than
+increasing the configured account risk, subject to exchange fills, fees,
+slippage, and position-size caps.
+
+### Protection Location
+
+`BOT_LIVE_PROTECTION_MODE` controls where live exits are enforced:
+
+| Value                | Behavior                                                                                                                                                                                                     |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `local_only`         | The bot loop checks SL, TP, and trailing levels and submits a market close. No protective algo orders are placed on Binance. Loss of the bot process or connectivity leaves no exchange-side bot protection. |
+| `local_and_exchange` | Binance receives reduce-only `STOP_MARKET` and `TAKE_PROFIT_MARKET` algo orders at entry. Trailing behavior depends on the mode below. This is required for live hybrid trailing.                            |
+
+Paper mode always simulates protection locally.
+
+### Trailing Mode Matrix
+
+| Staged  | Hybrid  | Live behavior with `local_and_exchange`                                                                                                                                                                                                |
+| ------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `false` | `false` | Legacy immediate trailing. Fixed SL, fixed TP, and an exchange trailing order are placed at entry. The fixed TP still caps profit.                                                                                                     |
+| `true`  | `false` | Staged local trailing. Binance keeps the original fixed SL/TP. The bot moves its local stop to break-even and activates local trailing at the configured R thresholds.                                                                 |
+| `true`  | `true`  | Automatic hybrid trailing. Binance starts with fixed SL/TP, receives a replacement break-even SL, then receives an exchange trailing order. The fixed TP is removed after trailing placement succeeds so winners can continue running. |
+| `false` | `true`  | Invalid. Startup fails because hybrid mode requires staged trailing.                                                                                                                                                                   |
+
+Configure automatic hybrid mode with:
+
+```dotenv
+BOT_LIVE_PROTECTION_MODE=local_and_exchange
+BOT_TRAILING_STAGE_ENABLED=true
+BOT_HYBRID_TRAILING_ENABLED=true
+BOT_TRAILING_BREAK_EVEN_R=0.8
+BOT_TRAILING_ACTIVATION_R=1.2
+BOT_TRAILING_STOP_PCT=1.6
+BOT_TRAILING_FEE_BUFFER_PCT=0.04
+```
+
+`R` is the absolute distance between entry and the original stop loss. For
+example, with entry `100` and initial stop `99`, `1R` is a favorable move of
+`1`. At `0.8R`, the example long reaches `100.8` and becomes eligible for
+break-even promotion. At `1.2R`, it reaches `101.2` and becomes eligible for
+trailing activation.
+
+For a long, break-even is entry plus `BOT_TRAILING_FEE_BUFFER_PCT`; for a short,
+it is entry minus that buffer. The buffer is a price percentage intended to
+offset fees and slippage. It does not guarantee positive net PnL.
+
+`BOT_TRAILING_STOP_PCT` becomes the Binance trailing callback rate in hybrid
+mode and is clamped to Binance's supported `0.1%` to `5.0%` range. Protective
+triggers use Binance mark price.
+
+### Hybrid Order Sequence
+
+Automatic hybrid mode uses replacement-first sequencing:
+
+1. Entry fill is confirmed.
+2. Binance fixed SL and TP orders are placed.
+3. At the break-even threshold, a replacement SL is placed before the original
+   SL is canceled.
+4. At trailing activation, the Binance trailing order is placed before the
+   fixed TP is canceled.
+5. Local fixed-TP enforcement is disabled only for the trailing phase.
+6. A temporary TP cancellation failure is retried on later polling cycles
+   without creating another trailing order.
+
+If initial exchange SL/TP placement fails, the live executor attempts an
+emergency market flatten. Do not intentionally restart the current bot version
+with an open staged position: staged flags and protective-order roles are held
+in process memory. Close or otherwise manage the position first, then restart.
+
 ## Important Environment Variables
 
 Core:
@@ -319,9 +405,13 @@ Risk and execution:
 Two-stage trailing:
 
 - `BOT_TRAILING_STAGE_ENABLED`
+- `BOT_HYBRID_TRAILING_ENABLED`
 - `BOT_TRAILING_BREAK_EVEN_R`
 - `BOT_TRAILING_ACTIVATION_R`
 - `BOT_TRAILING_FEE_BUFFER_PCT`
+
+See [TP, SL, And Trailing Modes](#tp-sl-and-trailing-modes) for the mode matrix
+and live exchange order lifecycle.
 
 Backtest speed:
 
