@@ -8,6 +8,7 @@ This project is tooling, not financial advice.
 
 - Runs live or paper futures trades from strategy profiles in `data/strategies`
 - Places live TP/SL protection with Binance algo orders when enabled
+- Promotes live protection automatically from fixed SL/TP to break-even and exchange trailing when hybrid mode is enabled
 - Reconciles exchange state back into the local DB
 - Backfills stored trade history from Binance user-trade fills for more accurate entry/exit prices
 - Caches backtest candle history locally so repeated parameter tests are much faster
@@ -223,6 +224,44 @@ futures-bot test-order
 # Or run directly:
 PYTHONPATH=src .venv/bin/python -m futures_bot.main test-order
 ```
+
+## Dashboard
+
+The dashboard runs with `run-web` and is served at
+`http://127.0.0.1:8010` by default. It provides:
+
+- engine start, stop, pause, resume, and one-cycle controls
+- live account metrics, open positions, signals, and recent trades
+- a line-only equity and PnL chart built from stored snapshots
+- strategy profile selection and backtest controls
+- exchange connectivity and order checks
+
+Selecting **Start** asks whether to clear previous trade and chart history.
+Keeping history starts normally. Clearing history deletes stored trades and
+snapshots, resets local realized PnL and equity history, and is refused while
+the bot or an open position is active.
+
+Runtime error banners can be dismissed in the current browser. A different
+error appears normally even after the previous message was dismissed.
+
+### Estimated Liquidation Proximity
+
+The **Est. Liq. Proximity** metric is not the distance to stop loss. It estimates
+how far the worst open position has moved adversely from entry toward a simple
+leverage-based liquidation boundary:
+
+```text
+estimated liquidation distance = entry price / leverage
+proximity = adverse move from entry / estimated liquidation distance * 100
+```
+
+The value is clamped from `0%` to `100%`. Entry and favorable movement display
+`0%`; halfway toward the estimated boundary displays `50%`.
+
+This is an operational estimate, not Binance's exact liquidation price. Actual
+liquidation depends on maintenance margin tiers, fees, isolated or cross margin,
+wallet balance, and other open positions. Confirm critical risk using the
+liquidation price and margin ratio shown by Binance.
 
 ## Exchange Order Check
 
@@ -463,17 +502,21 @@ Main API endpoints:
 - `GET /api/trades`
 - `GET /api/history`
 - `GET /api/exchange`
-- `POST /api/start`
+- `POST /api/start` with optional JSON body `{"clear_history": true}`
 - `POST /api/stop`
 - `POST /api/pause`
 - `POST /api/resume`
 - `POST /api/run-once`
 - `POST /api/test-order`
+- `GET /api/config`
+- `POST /api/seed-default-strategy`
 - `POST /api/trades/{symbol}/close`
 - `GET /api/strategies`
 - `POST /api/strategies/save`
 - `POST /api/strategies/load/{name}`
 - `POST /api/backtest/run`
+- `GET /api/backtest/jobs/{job_id}`
+- `POST /api/backtest/jobs/{job_id}/cancel`
 
 ## Files You Will Use Most
 
@@ -545,15 +588,16 @@ Higher threshold means fewer, stricter entries.
 
 Current profiles in data/strategies include:
 
-- ema7_50_trend_strict
-- ema7_50_adx_balanced
-- trend_conservative_multi
-- trend_balanced_multi
-- trend_aggressive_breakout
-- mean_reversion_range
 - adaptive_trend_guarded
+- ema30_60_trend_strict
+- ema7_20_adx_balanced
+- ema7_20_trend_strict
+- mean_reversion_range
+- trend_aggressive_breakout
+- trend_balanced_multi
+- trend_conservative_multi
 
-Use one by setting BOT_STRATEGY_PROFILE to the profile name.
+Use one by setting `BOT_STRATEGY_PROFILE` to the profile name.
 
 ## Backtesting Notes
 
@@ -603,13 +647,14 @@ Check:
 Run tests:
 
 ```bash
-python -m unittest tests.test_trading_bot
+.venv/bin/python -m unittest tests.test_trading_bot
 ```
 
 Compile check:
 
 ```bash
-python -m compileall src tests
+.venv/bin/python -m compileall src tests
+node --check src/futures_bot/dashboard/static/app.js
 ```
 
 ## Final Notes

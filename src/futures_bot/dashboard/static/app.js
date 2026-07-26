@@ -149,9 +149,9 @@ function renderMetrics(metrics) {
     ),
     metricCard("Margin Used", formatMoney(metrics.margin_in_use)),
     metricCard(
-      "Liquidation Risk",
+      "Est. Liq. Proximity",
       `${formatNumber(metrics.liquidation_risk)}%`,
-      metrics.liquidation_risk >= 80 ? "negative" : "",
+      metrics.liquidation_risk >= 75 ? "negative" : metrics.liquidation_risk >= 50 ? "caution" : "",
     ),
     metricCard("Open Positions", String(metrics.open_positions)),
   ].join("")
@@ -738,14 +738,38 @@ function updateChart(metrics) {
       data: {
         labels,
         datasets: [
-          { label: "Equity", data: equitySeries, borderColor: "#6ee7b7", tension: 0.35, fill: false },
-          { label: "PnL", data: pnlSeries, borderColor: "#60a5fa", tension: 0.35, fill: false },
+          {
+            label: "Equity",
+            data: equitySeries,
+            borderColor: "#44d7a8",
+            borderWidth: 2,
+            pointRadius: 0,
+            pointHoverRadius: 0,
+            tension: 0.28,
+            fill: false,
+          },
+          {
+            label: "PnL",
+            data: pnlSeries,
+            borderColor: "#5b9cf6",
+            borderWidth: 2,
+            pointRadius: 0,
+            pointHoverRadius: 0,
+            tension: 0.28,
+            fill: false,
+          },
         ],
       },
       options: {
         responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        interaction: { intersect: false, mode: "index" },
         plugins: {
-          legend: { labels: { color: "#e5eefc" } },
+          legend: {
+            align: "end",
+            labels: { color: "#b7c2d0", usePointStyle: false, boxWidth: 18, boxHeight: 2 },
+          },
           tooltip: {
             callbacks: {
               title(items) {
@@ -758,7 +782,7 @@ function updateChart(metrics) {
         scales: {
           x: {
             ticks: {
-              color: "#94a3b8",
+              color: "#7f8c9d",
               maxRotation: 0,
               autoSkip: false,
               callback(value, index) {
@@ -767,7 +791,11 @@ function updateChart(metrics) {
             },
             grid: { display: false },
           },
-          y: { ticks: { color: "#94a3b8" }, grid: { color: "rgba(148, 163, 184, 0.12)" } },
+          y: {
+            ticks: { color: "#7f8c9d", maxTicksLimit: 6 },
+            grid: { color: "rgba(126, 142, 161, 0.12)" },
+            border: { display: false },
+          },
         },
       },
     })

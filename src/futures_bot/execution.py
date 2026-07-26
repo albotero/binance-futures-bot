@@ -74,12 +74,14 @@ class BaseExecution:
             return 0.0
         risks: list[float] = []
         for position in self.positions.values():
+            entry_price = max(position.entry_price, 1e-9)
+            liquidation_distance = entry_price / max(position.leverage, 1)
             if position.side == Side.LONG:
-                gap = max(position.current_price -
-                          position.stop_loss_price, 0.0)
+                adverse_move = max(entry_price - position.current_price, 0.0)
             else:
-                gap = max(position.stop_loss_price -
-                          position.current_price, 0.0)
-            denom = max(position.current_price, 1e-9)
-            risks.append(max(min(100 - (gap / denom) * 100, 100.0), 0.0))
-        return sum(risks) / len(risks)
+                adverse_move = max(position.current_price - entry_price, 0.0)
+            risks.append(max(min(
+                adverse_move / max(liquidation_distance, 1e-9) * 100,
+                100.0,
+            ), 0.0))
+        return max(risks)

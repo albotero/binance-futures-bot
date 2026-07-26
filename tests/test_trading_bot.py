@@ -380,6 +380,45 @@ class EngineTransitionTests(unittest.TestCase):
         self.assertIsNotNone(after)
         self.assertGreater(after.trailing_stop_price, before_trailing)
 
+    def test_liquidation_risk_tracks_adverse_move_toward_leverage_boundary(self) -> None:
+        execution = PaperExecution(initial_equity=1000.0)
+        long_position = Position(
+            symbol="BTCUSDT",
+            side=Side.LONG,
+            quantity=1.0,
+            entry_price=100.0,
+            current_price=100.0,
+            leverage=20,
+            strategy="test",
+            stop_loss_price=98.0,
+            take_profit_price=104.0,
+            trailing_stop_price=99.0,
+        )
+        execution.open_position(long_position)
+
+        self.assertEqual(execution.snapshot().liquidation_risk, 0.0)
+        long_position.mark(97.5)
+        self.assertAlmostEqual(execution.snapshot().liquidation_risk, 50.0)
+        long_position.mark(95.0)
+        self.assertAlmostEqual(execution.snapshot().liquidation_risk, 100.0)
+
+        execution.positions.clear()
+        short_position = Position(
+            symbol="ETHUSDT",
+            side=Side.SHORT,
+            quantity=1.0,
+            entry_price=100.0,
+            current_price=102.5,
+            leverage=20,
+            strategy="test",
+            stop_loss_price=103.0,
+            take_profit_price=94.0,
+            trailing_stop_price=101.0,
+        )
+        execution.open_position(short_position)
+
+        self.assertAlmostEqual(execution.snapshot().liquidation_risk, 50.0)
+
     def test_staged_trailing_arms_after_activation_and_moves_to_break_even(self) -> None:
         position = Position(
             symbol="BTCUSDT",
