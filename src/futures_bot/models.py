@@ -92,6 +92,7 @@ class BotConfig:
     trailing_break_even_r: float = 0.8
     trailing_activation_r: float = 1.2
     trailing_fee_buffer_pct: float = 0.04
+    trading_fee_pct: float = 0.05
     max_daily_loss_pct: float = 5.0
     min_margin_buffer_pct: float = 25.0
     quote_asset: str = "USDT"
@@ -180,6 +181,9 @@ class Position:
     opened_at: str = field(default_factory=iso)
     updated_at: str = field(default_factory=iso)
     unrealized_pnl: float = 0.0
+    gross_pnl: float = 0.0
+    trading_fees: float = 0.0
+    funding_pnl: float = 0.0
     realized_pnl: float = 0.0
     status: TradeStatus = TradeStatus.OPEN
     close_reason: str = ""

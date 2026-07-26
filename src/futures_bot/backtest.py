@@ -26,6 +26,9 @@ class BacktestTrade:
     entry_price: float
     exit_price: float
     quantity: float
+    gross_pnl: float
+    trading_fees: float
+    funding_pnl: float
     realized_pnl: float
     opened_at: str
     closed_at: str
@@ -175,7 +178,10 @@ def run_backtest(
             _store_backtest_candles_cache(config, symbol, candles)
         if not candles:
             raise ValueError("No candles returned")
-        return _run_symbol_backtest(config, profile, symbol, candles, allocation)
+        funding_rates = _fetch_backtest_funding_rates(
+            market_data, symbol, candles)
+        return _run_symbol_backtest(
+            config, profile, symbol, candles, allocation, funding_rates)
 
     if len(symbols) == 1:
         symbol = symbols[0]
@@ -505,9 +511,11 @@ def _run_symbol_backtest(
     symbol: str,
     candles: list[dict[str, float]],
     start_equity: float,
+    funding_rates: list[dict[str, float]] | None = None,
 ) -> BacktestSymbolReport:
     execution = PaperExecution(
         initial_equity=start_equity,
+        trading_fee_pct=config.trading_fee_pct,
         trailing_stop_pct=config.trailing_stop_pct,
         trailing_stage_enabled=config.trailing_stage_enabled,
         hybrid_trailing_enabled=config.hybrid_trailing_enabled,
@@ -521,11 +529,25 @@ def _run_symbol_backtest(
     max_drawdown = 0.0
     warmup = min(max(30, _profile_warmup(profile)), max(len(candles) - 1, 0))
     eval_window = max(config.backtest_eval_window, warmup + 5)
+    pending_funding = iter(sorted(
+        funding_rates or [], key=lambda item: item.get("funding_time", 0.0)))
+    next_funding = next(pending_funding, None)
 
     for index in range(warmup, len(candles)):
         start = max(0, index + 1 - eval_window)
         window = candles[start: index + 1]
         current_price = float(window[-1]["close"])
+        candle_time = float(window[-1].get(
+            "close_time", window[-1].get("open_time", 0.0)))
+        while next_funding and next_funding.get("funding_time", 0.0) <= candle_time:
+            funding_mark = float(next_funding.get(
+                "mark_price") or current_price)
+            execution.apply_funding(
+                symbol,
+                funding_mark,
+                float(next_funding.get("funding_rate") or 0.0),
+            )
+            next_funding = next(pending_funding, None)
         execution.mark_price(symbol, current_price)
         evaluation = evaluate_profile(
             profile, window, symbol, config.risk_reward_ratio)
@@ -676,11 +698,32 @@ def _trade_from_position(position: Position, reason: str) -> BacktestTrade:
         entry_price=position.entry_price,
         exit_price=position.current_price,
         quantity=position.quantity,
+        gross_pnl=position.gross_pnl,
+        trading_fees=position.trading_fees,
+        funding_pnl=position.funding_pnl,
         realized_pnl=position.realized_pnl,
         opened_at=position.opened_at,
         closed_at=position.updated_at,
         reason=reason,
     )
+
+
+def _fetch_backtest_funding_rates(
+    market_data: BinanceMarketData,
+    symbol: str,
+    candles: list[dict[str, float]],
+) -> list[dict[str, float]]:
+    if not candles:
+        return []
+    start_time = int(candles[0].get("open_time", 0.0))
+    end_time = int(candles[-1].get(
+        "close_time", candles[-1].get("open_time", 0.0)))
+    if start_time <= 0 or end_time <= 0:
+        return []
+    fetch = getattr(market_data, "fetch_funding_rates", None)
+    if not callable(fetch):
+        return []
+    return fetch(symbol, start_time, end_time)
 
 
 def _win_rate(trades: list[BacktestTrade]) -> float:

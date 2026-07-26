@@ -1,4 +1,5 @@
 from __future__ import annotations
+from futures_bot.accounting import calculate_trade_accounting
 from futures_bot.storage import SQLiteStore
 from futures_bot.api import build_app
 from futures_bot.strategies.engine import StrategyEvaluation, evaluate_profile
@@ -8,9 +9,9 @@ from futures_bot.execution_paper import PaperExecution
 from futures_bot.execution_live import BinanceFuturesExecution, _group_exchange_fills, _match_trade_to_fills
 from futures_bot.engine import TradingEngine
 from futures_bot.config import default_strategy_profile
-from futures_bot.backtest import BacktestReport, BacktestSymbolReport, BacktestSuiteResult, _open_backtest_position, compare_profiles, fetch_backtest_candles, parse_backtest_duration, run_backtest_suite
+from futures_bot.backtest import BacktestReport, BacktestSymbolReport, BacktestSuiteResult, _open_backtest_position, _run_symbol_backtest, compare_profiles, fetch_backtest_candles, parse_backtest_duration, run_backtest_suite
 from futures_bot.main import build_parser
-from futures_bot.market_data import BinanceAPIError, BinanceFuturesRESTClient
+from futures_bot.market_data import BinanceAPIError, BinanceFuturesRESTClient, BinanceMarketData
 from futures_bot.order_check import place_and_cancel_test_order
 
 import tempfile
@@ -41,6 +42,48 @@ def make_candles(closes: list[float]) -> list[dict[str, float]]:
             "volume": 100.0,
         })
     return candles
+
+
+class TradeAccountingTests(unittest.TestCase):
+    def test_net_pnl_deducts_round_trip_fees_and_adds_signed_funding(self) -> None:
+        result = calculate_trade_accounting(
+            side=Side.LONG,
+            quantity=2.0,
+            entry_price=100.0,
+            exit_price=110.0,
+            entry_fee_rate_pct=0.05,
+            exit_fee_rate_pct=0.05,
+            funding_pnl=-0.25,
+        )
+
+        self.assertAlmostEqual(result.gross_pnl, 20.0)
+        self.assertAlmostEqual(result.trading_fees, 0.21)
+        self.assertAlmostEqual(result.funding_pnl, -0.25)
+        self.assertAlmostEqual(result.net_pnl, 19.54)
+
+    def test_paper_execution_reports_net_pnl_after_fees_and_funding(self) -> None:
+        execution = PaperExecution(initial_equity=1000.0, trading_fee_pct=0.05)
+        execution.open_position(Position(
+            symbol="BTCUSDT",
+            side=Side.LONG,
+            quantity=2.0,
+            entry_price=100.0,
+            current_price=100.0,
+            leverage=2,
+            strategy="test",
+            stop_loss_price=95.0,
+            take_profit_price=110.0,
+            trailing_stop_price=0.0,
+        ))
+        execution.apply_funding("BTCUSDT", 105.0, 0.001)
+        closed = execution.close_position("BTCUSDT", 110.0)
+
+        self.assertIsNotNone(closed)
+        self.assertAlmostEqual(closed.gross_pnl, 20.0)
+        self.assertAlmostEqual(closed.trading_fees, 0.21)
+        self.assertAlmostEqual(closed.funding_pnl, -0.21)
+        self.assertAlmostEqual(closed.realized_pnl, 19.58)
+        self.assertAlmostEqual(execution.balance, 1019.58)
 
 
 class MarketDataTests(unittest.TestCase):
@@ -555,6 +598,25 @@ class EngineTransitionTests(unittest.TestCase):
 
         self.assertEqual(self.engine.state.last_error, "")
 
+    def test_paper_funding_event_is_applied_only_once(self) -> None:
+        self.engine._open_from_signal("BTCUSDT", 100.0, "long", None)
+        position = self.engine.execution.get_position("BTCUSDT")
+        self.assertIsNotNone(position)
+        assert position is not None
+        funding_time = int(time.time() * 1000) - 1000
+        position.opened_at = "2020-01-01T00:00:00+00:00"
+        with patch.object(BinanceMarketData, "fetch_funding_rates", return_value=[{
+                "funding_time": float(funding_time),
+                "funding_rate": 0.001,
+                "mark_price": 100.0,
+        }]):
+            self.engine._apply_paper_funding("BTCUSDT", 100.0)
+            first_funding = position.funding_pnl
+            self.engine._apply_paper_funding("BTCUSDT", 100.0)
+
+        self.assertLess(first_funding, 0.0)
+        self.assertAlmostEqual(position.funding_pnl, first_funding)
+
     def test_dns_error_reports_endpoint_and_alpine_resolver_hint(self) -> None:
         self.engine._handle_runtime_error(
             "BTCUSDC",
@@ -627,6 +689,53 @@ class BacktestTests(unittest.TestCase):
 
         self.assertEqual(len(candles), 4)
         self.assertEqual(candles[0]["open_time"], 6.0)
+
+    def test_backtest_applies_historical_funding_to_net_pnl(self) -> None:
+        config = BotConfig(
+            initial_equity=1000.0,
+            trading_fee_pct=0.0,
+            max_position_pct=10.0,
+        )
+        profile = StrategyProfile(name="funding-test")
+        candles = [
+            {
+                "open_time": float(index * 300_000),
+                "close_time": float((index + 1) * 300_000 - 1),
+                "open": 100.0,
+                "high": 100.0,
+                "low": 100.0,
+                "close": 100.0,
+                "volume": 1.0,
+            }
+            for index in range(40)
+        ]
+        funding_time = candles[32]["close_time"]
+        evaluation = StrategyEvaluation(
+            score=1.0,
+            action="long",
+            reasons=["test"],
+            signals=[],
+            exit_plan=None,
+        )
+
+        with patch("futures_bot.backtest.evaluate_profile", return_value=evaluation):
+            report = _run_symbol_backtest(
+                config,
+                profile,
+                "BTCUSDT",
+                candles,
+                1000.0,
+                [{"funding_time": funding_time, "funding_rate": 0.001,
+                  "mark_price": 100.0}],
+            )
+
+        self.assertEqual(len(report.trades), 1)
+        trade = report.trades[0]
+        self.assertLess(trade.funding_pnl, 0.0)
+        self.assertAlmostEqual(
+            trade.realized_pnl,
+            trade.gross_pnl - trade.trading_fees + trade.funding_pnl,
+        )
 
     def test_backtest_uses_bounded_evaluation_window(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1081,6 +1190,64 @@ class BacktestTests(unittest.TestCase):
 
 
 class LiveExecutionTests(unittest.TestCase):
+    def test_live_close_uses_actual_commissions_and_funding_income(self) -> None:
+        execution = BinanceFuturesExecution(
+            initial_equity=1000.0,
+            live_protection_mode="local_only",
+        )
+
+        class FakeClient:
+            def __init__(self) -> None:
+                self.closed = False
+
+            def futures_change_leverage(self, symbol: str, leverage: int) -> dict:
+                return {"symbol": symbol, "leverage": leverage}
+
+            def futures_create_order(self, **params: object) -> dict:
+                if params.get("side") == "SELL":
+                    self.closed = True
+                    return {"orderId": 2, "avgPrice": "110"}
+                return {"orderId": 1, "avgPrice": "100"}
+
+            def futures_user_trades(self, symbol: str, **params: object) -> list[dict]:
+                rows = [{
+                    "symbol": symbol, "orderId": 1, "buyer": True,
+                    "qty": "2", "quoteQty": "200", "realizedPnl": "0",
+                    "commission": "0.10", "time": 1000,
+                }]
+                if self.closed:
+                    rows.append({
+                        "symbol": symbol, "orderId": 2, "buyer": False,
+                        "qty": "2", "quoteQty": "220", "realizedPnl": "20",
+                        "commission": "0.11", "time": 2000,
+                    })
+                return rows
+
+            def futures_income_history(self, **params: object) -> list[dict]:
+                return [{"incomeType": "FUNDING_FEE", "income": "-0.25"}]
+
+        execution.client = FakeClient()  # type: ignore[assignment]
+        execution.open_position(Position(
+            symbol="BTCUSDT",
+            side=Side.LONG,
+            quantity=2.0,
+            entry_price=100.0,
+            current_price=100.0,
+            leverage=2,
+            strategy="test",
+            stop_loss_price=95.0,
+            take_profit_price=110.0,
+            trailing_stop_price=0.0,
+        ))
+        closed = execution.close_position("BTCUSDT", 110.0)
+
+        self.assertIsNotNone(closed)
+        self.assertAlmostEqual(closed.gross_pnl, 20.0)
+        self.assertAlmostEqual(closed.trading_fees, 0.21)
+        self.assertAlmostEqual(closed.funding_pnl, -0.25)
+        self.assertAlmostEqual(closed.realized_pnl, 19.54)
+        self.assertAlmostEqual(execution.balance, 1019.54)
+
     @patch("futures_bot.execution_live.time.sleep")
     def test_open_retries_failed_submission_with_same_client_order_id(self, sleep_mock: MagicMock) -> None:
         execution = BinanceFuturesExecution(
@@ -1276,15 +1443,16 @@ class LiveExecutionTests(unittest.TestCase):
     def test_group_exchange_fills_builds_weighted_average_by_order(self) -> None:
         fills = _group_exchange_fills([
             {"symbol": "NEOUSDC", "orderId": 10, "buyer": True, "qty": "2",
-                "quoteQty": "4", "realizedPnl": "0", "time": 1000},
+                "quoteQty": "4", "realizedPnl": "0", "commission": "0.002", "time": 1000},
             {"symbol": "NEOUSDC", "orderId": 10, "buyer": True, "qty": "1",
-                "quoteQty": "2.1", "realizedPnl": "0", "time": 1000},
+                "quoteQty": "2.1", "realizedPnl": "0", "commission": "0.001", "time": 1000},
         ])
 
         self.assertEqual(len(fills), 1)
         self.assertEqual(fills[0].order_id, 10)
         self.assertAlmostEqual(fills[0].quantity, 3.0, places=8)
         self.assertAlmostEqual(fills[0].average_price, 2.0333333333, places=8)
+        self.assertAlmostEqual(fills[0].commission, 0.003, places=8)
 
     def test_match_trade_to_fills_uses_entry_then_first_opposite_exit(self) -> None:
         fills = _group_exchange_fills([

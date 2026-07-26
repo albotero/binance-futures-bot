@@ -11,6 +11,7 @@ This project is tooling, not financial advice.
 - Promotes live protection automatically from fixed SL/TP to break-even and exchange trailing when hybrid mode is enabled
 - Reconciles exchange state back into the local DB
 - Backfills stored trade history from Binance user-trade fills for more accurate entry/exit prices
+- Calculates net PnL after trading fees and signed funding payments
 - Caches backtest candle history locally so repeated parameter tests are much faster
 - Checks authenticated order creation and cancellation from the CLI or dashboard
 
@@ -397,6 +398,24 @@ offset fees and slippage. It does not guarantee positive net PnL.
 mode and is clamped to Binance's supported `0.1%` to `5.0%` range. Protective
 triggers use Binance mark price.
 
+### Net PnL Accounting
+
+Closed-trade PnL is calculated as:
+
+```text
+net PnL = gross price PnL - entry fee - exit fee + signed funding income
+```
+
+Set `BOT_TRADING_FEE_PCT` to the expected per-order taker fee percentage for
+paper trading and backtests. The default is `0.05`, so both entry and exit
+notional are charged `0.05%`. Backtests and open paper positions replay
+Binance historical funding rates at their published timestamps.
+
+Live mode uses commissions reported by Binance user trades and signed
+`FUNDING_FEE` income records. Positive funding income is added and negative
+funding income is deducted. SQLite trade history and the dashboard retain
+gross PnL, total trading fees, funding PnL, and net realized PnL separately.
+
 ### Hybrid Order Sequence
 
 Automatic hybrid mode uses replacement-first sequencing:
@@ -440,6 +459,7 @@ Risk and execution:
 - `BOT_STOP_LOSS_PCT`
 - `BOT_TAKE_PROFIT_PCT`
 - `BOT_TRAILING_STOP_PCT`
+- `BOT_TRADING_FEE_PCT`
 
 Two-stage trailing:
 

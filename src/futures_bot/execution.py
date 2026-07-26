@@ -24,6 +24,7 @@ class ExecutionAdapter(Protocol):
 @dataclass(slots=True)
 class BaseExecution:
     initial_equity: float
+    trading_fee_pct: float = 0.0
     trailing_stop_pct: float = 0.0
     trailing_stage_enabled: bool = False
     hybrid_trailing_enabled: bool = False
@@ -51,6 +52,17 @@ class BaseExecution:
             position.mark(price)
             if self.trailing_stop_pct > 0:
                 position.update_trailing_stop(self.trailing_stop_pct)
+
+    def apply_funding(self, symbol: str, mark_price: float, funding_rate: float) -> float:
+        position = self.positions.get(symbol)
+        if not position:
+            return 0.0
+        direction = 1.0 if position.side == Side.LONG else -1.0
+        payment = -(direction * position.quantity * mark_price * funding_rate)
+        position.funding_pnl += payment
+        self.realized_pnl += payment
+        self.balance += payment
+        return payment
 
     def snapshot(self) -> DashboardMetrics:
         unrealized = sum(

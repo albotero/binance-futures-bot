@@ -149,6 +149,28 @@ class BinanceFuturesRESTClient:
             },
         )
 
+    def futures_funding_rate(
+        self,
+        symbol: str,
+        *,
+        start_time: int | None = None,
+        end_time: int | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        payload = self._request(
+            "GET",
+            "/fapi/v1/fundingRate",
+            {
+                "symbol": symbol,
+                "startTime": start_time,
+                "endTime": end_time,
+                "limit": limit,
+            },
+        )
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        return []
+
     def futures_symbol_ticker(self, symbol: str) -> dict[str, Any]:
         return self._request("GET", "/fapi/v1/ticker/price", {"symbol": symbol})
 
@@ -244,6 +266,31 @@ class BinanceFuturesRESTClient:
             return [item for item in payload if isinstance(item, dict)]
         return []
 
+    def futures_income_history(
+        self,
+        *,
+        symbol: str | None = None,
+        income_type: str | None = None,
+        start_time: int | None = None,
+        end_time: int | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        payload = self._request(
+            "GET",
+            "/fapi/v1/income",
+            {
+                "symbol": symbol,
+                "incomeType": income_type,
+                "startTime": start_time,
+                "endTime": end_time,
+                "limit": limit,
+            },
+            signed=True,
+        )
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        return []
+
 
 @dataclass(slots=True)
 class BinanceMarketData:
@@ -299,3 +346,32 @@ class BinanceMarketData:
 
     def latest_price(self, symbol: str) -> float:
         return float(self.client.futures_symbol_ticker(symbol=symbol)["price"])
+
+    def fetch_funding_rates(
+        self,
+        symbol: str,
+        start_time: int,
+        end_time: int,
+    ) -> list[dict[str, float]]:
+        rates: list[dict[str, float]] = []
+        cursor = start_time
+        while cursor <= end_time:
+            rows = self.client.futures_funding_rate(
+                symbol,
+                start_time=cursor,
+                end_time=end_time,
+                limit=1000,
+            )
+            if not rows:
+                break
+            for row in rows:
+                rates.append({
+                    "funding_time": float(row.get("fundingTime") or 0.0),
+                    "funding_rate": float(row.get("fundingRate") or 0.0),
+                    "mark_price": float(row.get("markPrice") or 0.0),
+                })
+            last_time = int(rates[-1]["funding_time"])
+            if len(rows) < 1000 or last_time >= end_time:
+                break
+            cursor = last_time + 1
+        return rates

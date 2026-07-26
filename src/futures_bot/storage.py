@@ -30,6 +30,9 @@ class SQLiteStore:
                     quantity REAL NOT NULL,
                     entry_price REAL NOT NULL,
                     exit_price REAL,
+                    gross_pnl REAL DEFAULT 0,
+                    trading_fees REAL DEFAULT 0,
+                    funding_pnl REAL DEFAULT 0,
                     realized_pnl REAL DEFAULT 0,
                     strategy TEXT,
                     stop_loss_price REAL,
@@ -61,6 +64,9 @@ class SQLiteStore:
             ("stop_loss_price", "REAL"),
             ("take_profit_price", "REAL"),
             ("trailing_stop_price", "REAL"),
+            ("gross_pnl", "REAL DEFAULT 0"),
+            ("trading_fees", "REAL DEFAULT 0"),
+            ("funding_pnl", "REAL DEFAULT 0"),
         ):
             if name not in columns:
                 conn.execute(
@@ -76,8 +82,9 @@ class SQLiteStore:
                 INSERT INTO trades (
                     symbol, side, quantity, entry_price, strategy,
                     stop_loss_price, take_profit_price, trailing_stop_price,
+                    gross_pnl, trading_fees, funding_pnl,
                     status, opened_at, metadata
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     position.symbol,
@@ -88,6 +95,9 @@ class SQLiteStore:
                     position.stop_loss_price,
                     position.take_profit_price,
                     position.trailing_stop_price,
+                    position.gross_pnl,
+                    position.trading_fees,
+                    position.funding_pnl,
                     position.status.value,
                     position.opened_at,
                     json.dumps(payload, sort_keys=True),
@@ -114,11 +124,15 @@ class SQLiteStore:
             conn.execute(
                 """
                 UPDATE trades
-                SET exit_price = ?, realized_pnl = ?, status = ?, close_reason = ?, closed_at = ?, metadata = ?
+                SET exit_price = ?, gross_pnl = ?, trading_fees = ?, funding_pnl = ?,
+                    realized_pnl = ?, status = ?, close_reason = ?, closed_at = ?, metadata = ?
                 WHERE id = ?
                 """,
                 (
                     position.current_price,
+                    position.gross_pnl,
+                    position.trading_fees,
+                    position.funding_pnl,
                     position.realized_pnl,
                     position.status.value,
                     position.close_reason,
@@ -154,6 +168,9 @@ class SQLiteStore:
         *,
         exit_price: float,
         realized_pnl: float,
+        gross_pnl: float | None = None,
+        trading_fees: float | None = None,
+        funding_pnl: float | None = None,
         status: str,
         close_reason: str,
         closed_at: str,
@@ -162,11 +179,16 @@ class SQLiteStore:
             conn.execute(
                 """
                 UPDATE trades
-                SET exit_price = ?, realized_pnl = ?, status = ?, close_reason = ?, closed_at = ?
+                SET exit_price = ?, gross_pnl = COALESCE(?, gross_pnl),
+                    trading_fees = COALESCE(?, trading_fees), funding_pnl = COALESCE(?, funding_pnl),
+                    realized_pnl = ?, status = ?, close_reason = ?, closed_at = ?
                 WHERE id = ? AND closed_at IS NULL
                 """,
                 (
                     exit_price,
+                    gross_pnl,
+                    trading_fees,
+                    funding_pnl,
                     realized_pnl,
                     status,
                     close_reason,
@@ -182,6 +204,9 @@ class SQLiteStore:
         entry_price: float | None = None,
         exit_price: float | None = None,
         realized_pnl: float | None = None,
+        gross_pnl: float | None = None,
+        trading_fees: float | None = None,
+        funding_pnl: float | None = None,
         opened_at: str | None = None,
         closed_at: str | None = None,
         metadata_updates: dict[str, Any] | None = None,
@@ -198,12 +223,16 @@ class SQLiteStore:
             conn.execute(
                 """
                 UPDATE trades
-                SET entry_price = ?, exit_price = ?, realized_pnl = ?, opened_at = ?, closed_at = ?, metadata = ?
+                SET entry_price = ?, exit_price = ?, gross_pnl = ?, trading_fees = ?, funding_pnl = ?,
+                    realized_pnl = ?, opened_at = ?, closed_at = ?, metadata = ?
                 WHERE id = ?
                 """,
                 (
                     row["entry_price"] if entry_price is None else entry_price,
                     row["exit_price"] if exit_price is None else exit_price,
+                    row["gross_pnl"] if gross_pnl is None else gross_pnl,
+                    row["trading_fees"] if trading_fees is None else trading_fees,
+                    row["funding_pnl"] if funding_pnl is None else funding_pnl,
                     row["realized_pnl"] if realized_pnl is None else realized_pnl,
                     row["opened_at"] if opened_at is None else opened_at,
                     row["closed_at"] if closed_at is None else closed_at,

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP, ROUND_UP
 from typing import Any
 
+from .accounting import calculate_trade_accounting
 from .execution import BaseExecution
 from .market_data import BinanceFuturesRESTClient
 from .models import Position, Side, TradeStatus, iso
@@ -27,6 +28,7 @@ class ExchangeFillSummary:
     quantity: float
     average_price: float
     realized_pnl: float
+    commission: float
     fill_time_ms: int
     fill_time: str
 
@@ -95,6 +97,9 @@ class BinanceFuturesExecution(BaseExecution):
         if fill.fill_time:
             position.opened_at = fill.fill_time
         position.entry_price = fill_price
+        position.trading_fees = fill.commission
+        self.realized_pnl -= fill.commission
+        self.balance -= fill.commission
         position.mark(fill_price)
         self._realign_protective_prices(
             position,
@@ -177,10 +182,17 @@ class BinanceFuturesExecution(BaseExecution):
         position.exit_order_id = order_id
         if fill.fill_time:
             position.updated_at = fill.fill_time
+        self._refresh_entry_commission(position)
         self._finalize_closed_position(
             position,
             exit_price=fill_price,
             reason=reason or TradeStatus.CLOSED.value,
+            exit_fee=fill.commission,
+            funding_pnl=self.exchange_funding_income(
+                symbol,
+                start_time_ms=_iso_to_ms(position.opened_at),
+                end_time_ms=fill.fill_time_ms or int(time.time() * 1000),
+            ),
         )
         return position
 
@@ -202,10 +214,24 @@ class BinanceFuturesExecution(BaseExecution):
         position.exit_order_id = order_id
         if fill_time:
             position.updated_at = fill_time
+        self._refresh_entry_commission(position)
+        exit_fee = 0.0
+        if order_id is not None:
+            for fill in self.exchange_fill_history(symbol, start_time_ms=_iso_to_ms(position.opened_at)):
+                if fill.order_id == order_id:
+                    exit_fee = fill.commission
+                    break
         self._finalize_closed_position(
             position,
             exit_price=price,
             reason=reason or TradeStatus.CLOSED.value,
+            exit_fee=exit_fee,
+            funding_pnl=self.exchange_funding_income(
+                symbol,
+                start_time_ms=_iso_to_ms(position.opened_at),
+                end_time_ms=_iso_to_ms(fill_time) if fill_time else int(
+                    time.time() * 1000),
+            ),
         )
         return position
 
@@ -233,6 +259,38 @@ class BinanceFuturesExecution(BaseExecution):
             rows = []
         return _group_exchange_fills(rows)
 
+    def exchange_funding_income(
+        self,
+        symbol: str,
+        *,
+        start_time_ms: int | None = None,
+        end_time_ms: int | None = None,
+    ) -> float:
+        try:
+            rows = self.client.futures_income_history(
+                symbol=symbol,
+                income_type="FUNDING_FEE",
+                start_time=start_time_ms,
+                end_time=end_time_ms,
+                limit=1000,
+            )
+        except AttributeError:
+            return 0.0
+        return sum(_safe_float(row.get("income")) for row in rows)
+
+    def _refresh_entry_commission(self, position: Position) -> None:
+        if position.entry_order_id is None:
+            return
+        fills = self.exchange_fill_history(
+            position.symbol, start_time_ms=_iso_to_ms(position.opened_at))
+        for fill in fills:
+            if fill.order_id == position.entry_order_id:
+                additional_fee = fill.commission - position.trading_fees
+                position.trading_fees = fill.commission
+                self.realized_pnl -= additional_fee
+                self.balance -= additional_fee
+                return
+
     def find_exchange_trade_fills(
         self,
         symbol: str,
@@ -245,18 +303,35 @@ class BinanceFuturesExecution(BaseExecution):
         fills = self.exchange_fill_history(symbol, start_time_ms=start_ms)
         return _match_trade_to_fills(fills, trade_side=trade_side, quantity=quantity, opened_at_ms=start_ms)
 
-    def _finalize_closed_position(self, position: Position, exit_price: float, reason: str) -> float:
+    def _finalize_closed_position(
+        self,
+        position: Position,
+        exit_price: float,
+        reason: str,
+        *,
+        exit_fee: float = 0.0,
+        funding_pnl: float = 0.0,
+    ) -> float:
         position.mark(exit_price)
-        if position.side == Side.LONG:
-            pnl = (exit_price - position.entry_price) * position.quantity
-        else:
-            pnl = (position.entry_price - exit_price) * position.quantity
-        position.realized_pnl = pnl
+        accounting = calculate_trade_accounting(
+            side=position.side,
+            quantity=position.quantity,
+            entry_price=position.entry_price,
+            exit_price=exit_price,
+            entry_fee=position.trading_fees,
+            exit_fee=exit_fee,
+            funding_pnl=funding_pnl,
+        )
+        position.gross_pnl = accounting.gross_pnl
+        position.trading_fees = accounting.trading_fees
+        position.funding_pnl = accounting.funding_pnl
+        position.realized_pnl = accounting.net_pnl
         position.status = TradeStatus(reason)
         position.close_reason = reason
-        self.realized_pnl += pnl
-        self.balance += pnl
-        return pnl
+        close_cash_flow = accounting.gross_pnl - exit_fee + funding_pnl
+        self.realized_pnl += close_cash_flow
+        self.balance += close_cash_flow
+        return accounting.net_pnl
 
     def _exchange_fill_for_order(
         self,
@@ -265,6 +340,11 @@ class BinanceFuturesExecution(BaseExecution):
         *,
         order_payload: Any,
     ) -> ExchangeFillSummary | None:
+        if order_id is not None:
+            fills = self.exchange_fill_history(symbol)
+            for fill in fills:
+                if fill.order_id == order_id:
+                    return fill
         direct_price = _extract_fill_price(order_payload)
         if direct_price is not None and direct_price > 0:
             return ExchangeFillSummary(
@@ -274,14 +354,10 @@ class BinanceFuturesExecution(BaseExecution):
                 quantity=0.0,
                 average_price=direct_price,
                 realized_pnl=0.0,
+                commission=0.0,
                 fill_time_ms=0,
                 fill_time="",
             )
-        if order_id is not None:
-            fills = self.exchange_fill_history(symbol)
-            for fill in fills:
-                if fill.order_id == order_id:
-                    return fill
         if order_id is None:
             return None
         try:
@@ -299,6 +375,7 @@ class BinanceFuturesExecution(BaseExecution):
             quantity=_safe_float(fetched.get("executedQty")),
             average_price=fetched_price,
             realized_pnl=0.0,
+            commission=0.0,
             fill_time_ms=int(fetched.get("updateTime") or 0),
             fill_time="",
         )
@@ -698,12 +775,14 @@ def _group_exchange_fills(rows: list[dict[str, Any]]) -> list[ExchangeFillSummar
                 "quantity": 0.0,
                 "quote_qty": 0.0,
                 "realized_pnl": 0.0,
+                "commission": 0.0,
                 "fill_time_ms": 0,
             },
         )
         item["quantity"] += _safe_float(row.get("qty"))
         item["quote_qty"] += _safe_float(row.get("quoteQty"))
         item["realized_pnl"] += _safe_float(row.get("realizedPnl"))
+        item["commission"] += abs(_safe_float(row.get("commission")))
         item["fill_time_ms"] = max(
             item["fill_time_ms"], int(row.get("time") or 0))
 
@@ -721,6 +800,7 @@ def _group_exchange_fills(rows: list[dict[str, Any]]) -> list[ExchangeFillSummar
                 quantity=quantity,
                 average_price=average_price,
                 realized_pnl=float(item["realized_pnl"]),
+                commission=float(item["commission"]),
                 fill_time_ms=fill_time_ms,
                 fill_time=iso(_ms_to_utc(fill_time_ms)
                               ) if fill_time_ms > 0 else "",

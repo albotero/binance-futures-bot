@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from urllib.error import URLError
 
+from .accounting import calculate_trade_accounting
 from .config import load_strategy_profile, save_strategy_profile
 from .execution import BaseExecution
 from .execution_live import BinanceFuturesExecution
@@ -62,11 +63,13 @@ class TradingEngine:
         self.thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
+        self._last_paper_funding_time: dict[str, int] = {}
 
     def _create_execution(self, config: BotConfig) -> BaseExecution:
         if config.mode.lower() == "live":
             return BinanceFuturesExecution(
                 initial_equity=config.initial_equity,
+                trading_fee_pct=config.trading_fee_pct,
                 trailing_stop_pct=config.trailing_stop_pct,
                 trailing_stage_enabled=config.trailing_stage_enabled,
                 hybrid_trailing_enabled=config.hybrid_trailing_enabled,
@@ -80,6 +83,7 @@ class TradingEngine:
             )
         return PaperExecution(
             initial_equity=config.initial_equity,
+            trading_fee_pct=config.trading_fee_pct,
             trailing_stop_pct=config.trailing_stop_pct,
             trailing_stage_enabled=config.trailing_stage_enabled,
             hybrid_trailing_enabled=config.hybrid_trailing_enabled,
@@ -247,13 +251,28 @@ class TradingEngine:
                 if exit_fill is not None:
                     updates["exit_price"] = exit_fill.average_price
                     updates["closed_at"] = exit_fill.fill_time
-                    updates["realized_pnl"] = _estimate_realized_pnl(
+                    opened_at = str(updates.get(
+                        "opened_at", trade.get("opened_at") or ""))
+                    funding_pnl = self.execution.exchange_funding_income(
+                        symbol,
+                        start_time_ms=_iso_to_ms(opened_at),
+                        end_time_ms=exit_fill.fill_time_ms,
+                    )
+                    accounting = calculate_trade_accounting(
                         side=str(trade.get("side", "")),
                         quantity=float(trade.get("quantity") or 0.0),
                         entry_price=float(updates.get(
                             "entry_price", trade.get("entry_price") or 0.0)),
                         exit_price=exit_fill.average_price,
+                        entry_fee=entry_fill.commission if entry_fill else float(
+                            trade.get("trading_fees") or 0.0),
+                        exit_fee=exit_fill.commission,
+                        funding_pnl=funding_pnl,
                     )
+                    updates["gross_pnl"] = accounting.gross_pnl
+                    updates["trading_fees"] = accounting.trading_fees
+                    updates["funding_pnl"] = accounting.funding_pnl
+                    updates["realized_pnl"] = accounting.net_pnl
                     metadata_updates["exit_order_id"] = exit_fill.order_id
                     used_order_ids.add(exit_fill.order_id)
                 if updates or metadata_updates:
@@ -265,6 +284,12 @@ class TradingEngine:
                             "exit_price") if "exit_price" in updates else None,
                         realized_pnl=updates.get(
                             "realized_pnl") if "realized_pnl" in updates else None,
+                        gross_pnl=updates.get(
+                            "gross_pnl") if "gross_pnl" in updates else None,
+                        trading_fees=updates.get(
+                            "trading_fees") if "trading_fees" in updates else None,
+                        funding_pnl=updates.get(
+                            "funding_pnl") if "funding_pnl" in updates else None,
                         opened_at=updates.get(
                             "opened_at") if "opened_at" in updates else None,
                         closed_at=updates.get(
@@ -307,6 +332,7 @@ class TradingEngine:
                     candles = self.data.fetch_candles(
                         symbol, self.config.interval, self.config.candles_limit)
                     current_price = float(candles[-1]["close"])
+                    self._apply_paper_funding(symbol, current_price)
                     self.execution.mark_price(symbol, current_price)
                     evaluation = evaluate_profile(
                         self.profile, candles, symbol, self.config.risk_reward_ratio)
@@ -322,6 +348,30 @@ class TradingEngine:
             if not cycle_had_error:
                 self.state.last_error = ""
             self._record_snapshot(self.state.last_run_at)
+
+    def _apply_paper_funding(self, symbol: str, current_price: float) -> None:
+        if self.config.mode.lower() != "paper":
+            return
+        position = self.execution.get_position(symbol)
+        if not position:
+            self._last_paper_funding_time.pop(symbol, None)
+            return
+
+        opened_ms = _iso_to_ms(position.opened_at)
+        cursor = max(
+            opened_ms, self._last_paper_funding_time.get(symbol, opened_ms))
+        end_ms = int(time.time() * 1000)
+        for event in self.data.fetch_funding_rates(symbol, cursor + 1, end_ms):
+            funding_time = int(event.get("funding_time") or 0)
+            if funding_time <= cursor:
+                continue
+            self.execution.apply_funding(
+                symbol,
+                float(event.get("mark_price") or current_price),
+                float(event.get("funding_rate") or 0.0),
+            )
+            cursor = funding_time
+        self._last_paper_funding_time[symbol] = cursor
 
     def _handle_runtime_error(self, context: str, exc: Exception) -> bool:
         message = str(exc)
@@ -398,22 +448,35 @@ class TradingEngine:
                     self.storage.record_close(closed)
                     continue
 
-            realized_pnl = _estimate_realized_pnl(
+            entry_price = float(trade.get("entry_price") or exit_price)
+            funding_pnl = self.execution.exchange_funding_income(
+                symbol,
+                start_time_ms=_iso_to_ms(str(trade.get("opened_at") or "")),
+                end_time_ms=exit_fill.fill_time_ms if exit_fill else None,
+            )
+            accounting = calculate_trade_accounting(
                 side=str(trade.get("side", "")).upper(),
                 quantity=float(trade.get("quantity") or 0.0),
-                entry_price=float(trade.get("entry_price") or exit_price),
+                entry_price=entry_price,
                 exit_price=exit_price,
+                entry_fee=entry_fill.commission if entry_fill else float(
+                    trade.get("trading_fees") or 0.0),
+                exit_fee=exit_fill.commission if exit_fill else 0.0,
+                funding_pnl=funding_pnl,
             )
             self.storage.close_trade_by_id(
                 int(trade["id"]),
                 exit_price=exit_price,
-                realized_pnl=realized_pnl,
+                gross_pnl=accounting.gross_pnl,
+                trading_fees=accounting.trading_fees,
+                funding_pnl=accounting.funding_pnl,
+                realized_pnl=accounting.net_pnl,
                 status=TradeStatus.EXTERNAL_CLOSE.value,
                 close_reason=TradeStatus.EXTERNAL_CLOSE.value,
                 closed_at=exit_fill.fill_time if exit_fill else utcnow().isoformat(),
             )
-            self.execution.realized_pnl += realized_pnl
-            self.execution.balance += realized_pnl
+            self.execution.realized_pnl += accounting.net_pnl
+            self.execution.balance += accounting.net_pnl
 
     def _restore_account_metrics(self) -> None:
         realized = self.storage.total_realized_pnl()

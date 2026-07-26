@@ -80,6 +80,8 @@ def load_bot_config() -> BotConfig:
         "BOT_TRAILING_ACTIVATION_R", config.trailing_activation_r)
     config.trailing_fee_buffer_pct = _read_float(
         "BOT_TRAILING_FEE_BUFFER_PCT", config.trailing_fee_buffer_pct)
+    config.trading_fee_pct = _read_float(
+        "BOT_TRADING_FEE_PCT", config.trading_fee_pct)
     config.max_daily_loss_pct = _read_float(
         "BOT_MAX_DAILY_LOSS_PCT", config.max_daily_loss_pct)
     config.min_margin_buffer_pct = _read_float(

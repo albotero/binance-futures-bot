@@ -465,7 +465,7 @@ function renderTrades(trades) {
       <table>
         <thead>
           <tr>
-            <th>Time</th><th>Symbol</th><th>Side</th><th>SL</th><th>TP</th><th>Status</th><th>PnL</th>
+            <th>Time</th><th>Symbol</th><th>Side</th><th>SL</th><th>TP</th><th>Status</th><th>Gross</th><th>Fees</th><th>Funding</th><th>Net PnL</th>
           </tr>
         </thead>
         <tbody>
@@ -479,6 +479,9 @@ function renderTrades(trades) {
               <td>${trade.stop_loss_price != null ? formatPrice(trade.stop_loss_price) : "-"}</td>
               <td>${trade.take_profit_price != null ? formatPrice(trade.take_profit_price) : "-"}</td>
               <td>${trade.status}</td>
+              <td class="${Number(trade.gross_pnl || 0) >= 0 ? "positive" : "negative"}">${formatMoney(trade.gross_pnl)}</td>
+              <td class="negative">${formatMoney(-Math.abs(Number(trade.trading_fees || 0)))}</td>
+              <td class="${Number(trade.funding_pnl || 0) >= 0 ? "positive" : "negative"}">${formatMoney(trade.funding_pnl)}</td>
               <td class="${Number(trade.realized_pnl || 0) >= 0 ? "positive" : "negative"}">${formatMoney(trade.realized_pnl)}</td>
             </tr>
           `,
