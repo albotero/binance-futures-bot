@@ -556,7 +556,7 @@ class TradingEngine:
             current_price + stop_distance * self.config.risk_reward_ratio if side == Side.LONG else current_price -
             stop_distance * self.config.risk_reward_ratio
         )
-        trailing_stop_price = exit_plan.trailing_stop_price if exit_plan else (
+        trailing_stop_price = 0.0 if self.config.trailing_stop_pct <= 0 else exit_plan.trailing_stop_price if exit_plan else (
             current_price * (1 - self.config.trailing_stop_pct /
                              100) if side == Side.LONG else current_price * (1 + self.config.trailing_stop_pct / 100)
         )

@@ -218,7 +218,9 @@ class IndicatorTests(unittest.TestCase):
         candles = make_candles(
             [100.0] * 20 + [101.0, 102.0, 104.0, 106.0, 109.0, 113.0, 118.0, 124.0, 131.0, 139.0])
 
-        evaluation = evaluate_profile(profile, candles, "BTCUSDT")
+        risk_reward_ratio = 2.5
+        evaluation = evaluate_profile(
+            profile, candles, "BTCUSDT", risk_reward_ratio)
 
         self.assertEqual(evaluation.action, "long")
         self.assertIsNotNone(evaluation.exit_plan)
@@ -226,6 +228,9 @@ class IndicatorTests(unittest.TestCase):
                         candles[-1]["close"])
         self.assertGreater(
             evaluation.exit_plan.take_profit_price, candles[-1]["close"])
+        risk = candles[-1]["close"] - evaluation.exit_plan.stop_loss_price
+        reward = evaluation.exit_plan.take_profit_price - candles[-1]["close"]
+        self.assertAlmostEqual(reward / risk, risk_reward_ratio)
 
 
 class EngineTransitionTests(unittest.TestCase):
@@ -330,6 +335,28 @@ class EngineTransitionTests(unittest.TestCase):
         self.assertEqual(position.stop_loss_price, 96.0)
         self.assertEqual(position.take_profit_price, 109.0)
         self.assertEqual(position.trailing_stop_price, 97.5)
+
+    def test_zero_trailing_percent_keeps_fixed_stop_and_take_profit(self) -> None:
+        self.engine.config.trailing_stop_pct = 0.0
+        evaluation = StrategyEvaluation(
+            score=1.0,
+            action="long",
+            reasons=["trend"],
+            signals=[],
+            exit_plan=type("Plan", (), {
+                "stop_loss_price": 96.0,
+                "take_profit_price": 110.0,
+                "trailing_stop_price": 97.5,
+            })(),
+        )
+
+        self.engine._open_from_signal("BTCUSDT", 100.0, "long", evaluation)
+
+        position = self.engine.execution.get_position("BTCUSDT")
+        self.assertIsNotNone(position)
+        self.assertEqual(position.stop_loss_price, 96.0)
+        self.assertEqual(position.take_profit_price, 110.0)
+        self.assertEqual(position.trailing_stop_price, 0.0)
 
     def test_leverage_expands_position_size_when_cap_binds(self) -> None:
         evaluation = StrategyEvaluation(

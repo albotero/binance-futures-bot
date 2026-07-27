@@ -1,6 +1,6 @@
 {
   "name": "ema7_20_trend_strict",
-  "threshold": 0.84,
+  "threshold": 0.76,
   "description": "EMA 7/20 momentum core with faster MACD confirmation and a slightly looser ADX gate for 2w tuning.",
   "rules": [
     {

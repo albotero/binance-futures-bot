@@ -60,15 +60,13 @@ def derive_exit_plan(
 
     candle_style = _profile_candle_style(profile)
     frame = prepare_candles(candles, candle_style)
-    current = float(frame[-1]["close"])
-    lookback = min(max(120, len(frame) // 2), len(frame))
+    current = float(candles[-1]["close"])
+    lookback = min(120, len(frame))
     window = frame[-lookback:]
 
     support, resistance = _recent_swing_levels(window, current)
     avg_range = _average_true_range(window)
-    momentum = max((abs(signal.score) for signal in signals), default=0.0)
     reward_multiple = max(risk_reward_ratio, 1.0)
-    momentum_bonus = min(momentum, 1.0) * 0.2
 
     min_risk = max(avg_range * 0.7, current * 0.0025)
     max_risk = max(avg_range * 2.4, current * 0.015)
@@ -81,7 +79,7 @@ def derive_exit_plan(
             stop_loss = current - min_risk
         risk = _clamp(current - stop_loss, min_risk, max_risk)
         stop_loss = current - risk
-        take_profit = current + risk * (reward_multiple + momentum_bonus)
+        take_profit = current + risk * reward_multiple
         trailing = max(current - max(avg_range, risk * 0.55), stop_loss)
         rationale = [
             f"swing_support {support:.4f}",
@@ -104,7 +102,7 @@ def derive_exit_plan(
         stop_loss = current + min_risk
     risk = _clamp(stop_loss - current, min_risk, max_risk)
     stop_loss = current + risk
-    take_profit = current - risk * (reward_multiple + momentum_bonus)
+    take_profit = current - risk * reward_multiple
     trailing = min(current + max(avg_range, risk * 0.55), stop_loss)
     rationale = [
         f"swing_support {support:.4f}",

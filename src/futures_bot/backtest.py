@@ -666,7 +666,7 @@ def _open_backtest_position(
         current_price + stop_distance * config.risk_reward_ratio if side == Side.LONG else current_price -
         stop_distance * config.risk_reward_ratio
     )
-    trailing_stop_price = exit_plan.trailing_stop_price if exit_plan else (
+    trailing_stop_price = 0.0 if config.trailing_stop_pct <= 0 else exit_plan.trailing_stop_price if exit_plan else (
         current_price * (1 - config.trailing_stop_pct /
                          100) if side == Side.LONG else current_price * (1 + config.trailing_stop_pct / 100)
     )
