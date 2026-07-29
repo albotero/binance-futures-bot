@@ -3,7 +3,7 @@ from futures_bot.accounting import calculate_trade_accounting
 from futures_bot.storage import SQLiteStore
 from futures_bot.api import build_app
 from futures_bot.strategies.engine import StrategyEvaluation, evaluate_profile
-from futures_bot.strategies.builtins import AdxStrategy, BollingerStrategy, EmaCrossStrategy, MacdStrategy, RsiReversionStrategy, heikin_ashi
+from futures_bot.strategies.builtins import AdxStrategy, BollingerStrategy, EmaCrossStrategy, MacdStrategy, RsiReversionStrategy, SupertrendStrategy, choppiness, heikin_ashi
 from futures_bot.models import BotConfig, Position, Side, StrategyProfile, StrategyRule, TradeStatus
 from futures_bot.execution_paper import PaperExecution
 from futures_bot.execution_live import BinanceFuturesExecution, _group_exchange_fills, _match_trade_to_fills
@@ -201,6 +201,31 @@ class IndicatorTests(unittest.TestCase):
         self.assertGreater(rsi_signal.score, 0)
         self.assertIsNotNone(bollinger_signal.reason)
         self.assertIsNotNone(adx_signal.reason)
+
+    def test_supertrend_signals_only_on_direction_change(self) -> None:
+        strategy = SupertrendStrategy(
+            period=7,
+            multiplier=2.0,
+            max_choppiness=100.0,
+        )
+        uptrend = make_candles([100.0 + index for index in range(40)])
+        reversal = make_candles(
+            [100.0 + index for index in range(40)]
+            + [138.0, 136.0, 134.0]
+        )
+
+        unchanged = strategy.generate(uptrend, "BTCUSDT")
+        bearish = strategy.generate(reversal, "BTCUSDT")
+
+        self.assertEqual(unchanged.score, 0.0)
+        self.assertEqual(bearish.score, -1.0)
+        self.assertEqual(bearish.side, Side.SHORT)
+
+    def test_choppiness_is_lower_for_directional_prices(self) -> None:
+        directional = make_candles([100.0 + index for index in range(30)])
+        ranging = make_candles([100.0 + (index % 2) for index in range(30)])
+
+        self.assertLess(choppiness(directional, 14), choppiness(ranging, 14))
 
     def test_profile_evaluation_builds_directional_exit_plan(self) -> None:
         profile = StrategyProfile(

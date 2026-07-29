@@ -507,6 +507,7 @@ Each rule uses one of:
 - `rsi`
 - `bollinger`
 - `adx`
+- `supertrend`
 
 Each profile sets:
 

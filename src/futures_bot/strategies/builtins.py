@@ -19,6 +19,51 @@ def lows(candles: list[Candle]) -> list[float]:
     return [float(candle["low"]) for candle in candles]
 
 
+def atr(candles: list[Candle], period: int = 14) -> list[float]:
+    if not candles:
+        return []
+    true_ranges = [float(candles[0]["high"]) - float(candles[0]["low"])]
+    for index in range(1, len(candles)):
+        high = float(candles[index]["high"])
+        low = float(candles[index]["low"])
+        previous_close = float(candles[index - 1]["close"])
+        true_ranges.append(max(
+            high - low,
+            abs(high - previous_close),
+            abs(low - previous_close),
+        ))
+
+    result = [0.0] * len(candles)
+    seed_index = min(period - 1, len(candles) - 1)
+    result[seed_index] = sum(true_ranges[:seed_index + 1]) / (seed_index + 1)
+    for index in range(seed_index + 1, len(candles)):
+        result[index] = (
+            result[index - 1] * (period - 1) + true_ranges[index]
+        ) / period
+    return result
+
+
+def choppiness(candles: list[Candle], period: int = 14) -> float:
+    if len(candles) < period + 1:
+        return 100.0
+    window = candles[-period:]
+    previous_close = float(candles[-period - 1]["close"])
+    true_range_sum = 0.0
+    for candle in window:
+        high = float(candle["high"])
+        low = float(candle["low"])
+        true_range_sum += max(
+            high - low,
+            abs(high - previous_close),
+            abs(low - previous_close),
+        )
+        previous_close = float(candle["close"])
+    price_range = max(highs(window)) - min(lows(window))
+    if price_range <= 0 or true_range_sum <= 0:
+        return 100.0
+    return 100 * math.log10(true_range_sum / price_range) / math.log10(period)
+
+
 def heikin_ashi(candles: list[Candle]) -> list[Candle]:
     if not candles:
         return []
@@ -284,12 +329,72 @@ class AdxStrategy(Strategy):
         return Signal(symbol, self.name, -0.75, f"Strong downtrend, ADX {latest_adx:.1f}")
 
 
+@dataclass(slots=True)
+class SupertrendStrategy(Strategy):
+    name: str = "supertrend"
+    period: int = 14
+    multiplier: float = 3.0
+    choppiness_period: int = 14
+    max_choppiness: float = 38.2
+    candle_style: str = "raw"
+
+    def generate(self, candles: list[Candle], symbol: str) -> Signal:
+        frame = prepare_candles(candles, self.candle_style)
+        if self.period < 2 or self.multiplier <= 0:
+            raise ValueError(
+                "Supertrend period and multiplier must be positive")
+        if len(frame) < self.period + 2:
+            return Signal(symbol, self.name, 0.0, f"Warmup {len(frame)}/{self.period + 2}")
+
+        atr_values = atr(frame, self.period)
+        final_upper = [0.0] * len(frame)
+        final_lower = [0.0] * len(frame)
+        direction = [1] * len(frame)
+        start = self.period - 1
+
+        for index in range(start, len(frame)):
+            high = float(frame[index]["high"])
+            low = float(frame[index]["low"])
+            close = float(frame[index]["close"])
+            midpoint = (high + low) / 2
+            basic_upper = midpoint + self.multiplier * atr_values[index]
+            basic_lower = midpoint - self.multiplier * atr_values[index]
+            if index == start:
+                final_upper[index] = basic_upper
+                final_lower[index] = basic_lower
+                continue
+
+            previous_close = float(frame[index - 1]["close"])
+            previous_upper = final_upper[index - 1]
+            previous_lower = final_lower[index - 1]
+            final_upper[index] = basic_upper if basic_upper < previous_upper or previous_close > previous_upper else previous_upper
+            final_lower[index] = basic_lower if basic_lower > previous_lower or previous_close < previous_lower else previous_lower
+            if close > previous_upper:
+                direction[index] = 1
+            elif close < previous_lower:
+                direction[index] = -1
+            else:
+                direction[index] = direction[index - 1]
+
+        latest_choppiness = choppiness(frame, self.choppiness_period)
+        if latest_choppiness > self.max_choppiness:
+            return Signal(symbol, self.name, 0.0, f"Choppy regime {latest_choppiness:.1f}")
+        latest_atr_pct = atr_values[-1] / \
+            max(float(frame[-1]["close"]), 1e-9) * 100
+        if direction[-2] < 0 and direction[-1] > 0:
+            return Signal(symbol, self.name, 1.0, f"Bullish Supertrend reversal, ATR {latest_atr_pct:.3f}%, CHOP {latest_choppiness:.1f}")
+        if direction[-2] > 0 and direction[-1] < 0:
+            return Signal(symbol, self.name, -1.0, f"Bearish Supertrend reversal, ATR {latest_atr_pct:.3f}%, CHOP {latest_choppiness:.1f}")
+        return Signal(symbol, self.name, 0.0, f"Supertrend unchanged, ATR {latest_atr_pct:.3f}%, CHOP {latest_choppiness:.1f}")
+
+
 STRATEGY_REGISTRY = {
     "ema_cross": EmaCrossStrategy,
     "macd": MacdStrategy,
     "rsi": RsiReversionStrategy,
     "bollinger": BollingerStrategy,
     "adx": AdxStrategy,
+    "supertrend": SupertrendStrategy,
 }
 
 

@@ -1,0 +1,19 @@
+{
+  "name": "supertrend_chop_1h",
+  "threshold": 0.8,
+  "description": "One-hour reversal-only Supertrend 14x2.5 gated by Choppiness Index <= 38.2, validated with 1% risk, 2.5R, and staged 1.2% trailing.",
+  "rules": [
+    {
+      "name": "supertrend",
+      "enabled": true,
+      "weight": 1.0,
+      "params": {
+        "period": 14,
+        "multiplier": 2.5,
+        "choppiness_period": 14,
+        "max_choppiness": 38.2,
+        "candle_style": "raw"
+      }
+    }
+  ]
+}
