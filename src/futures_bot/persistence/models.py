@@ -34,8 +34,9 @@ class UTCDateTime(TypeDecorator[datetime]):
     def process_bind_param(
         self,
         value: datetime | None,
-        _dialect: Dialect,
+        dialect: Dialect,
     ) -> datetime | None:
+        _ = dialect
         if value is None:
             return None
         if value.tzinfo is None or value.utcoffset() is None:
@@ -45,8 +46,9 @@ class UTCDateTime(TypeDecorator[datetime]):
     def process_result_value(
         self,
         value: datetime | None,
-        _dialect: Dialect,
+        dialect: Dialect,
     ) -> datetime | None:
+        _ = dialect
         if value is None:
             return None
         if value.tzinfo is None or value.utcoffset() is None:

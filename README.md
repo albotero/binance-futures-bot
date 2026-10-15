@@ -64,6 +64,18 @@ The service does not yet connect to this schema; persistence integration is a
 later milestone. Migrations use the configured `BOT_DATABASE_URL` and do not
 automatically create or upgrade a database on application startup.
 
+## Public exchange data
+
+The read-only USDⓈ-M adapter exposes public server time, exchange metadata,
+klines, and funding-rate history from the Binance Futures testnet or production
+market-data API. It requires no API keys and has no order-submission methods.
+Responses are validated and normalized to UTC timestamps and `Decimal` values;
+requests use bounded concurrency, bounded retries, and sanitized errors.
+
+The adapter is not yet wired into the API, dashboard, cache, backtester, or
+paper-execution loop. Its unit tests use mocked HTTP responses and never call
+Binance.
+
 ## Roadmap
 
 The implementation phases, acceptance criteria, architecture map, deployment
