@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "binance-futures-platform"
+version = "0.1.0"
+description = "A paper-first Binance USDⓈ-M Futures research and trading platform."
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+  "fastapi==0.143.2",
+  "uvicorn==0.54.0",
+  "pydantic-settings==2.16.0",
+  "SQLAlchemy==2.1.4",
+  "alembic==1.20.0",
+  "httpx2==2.13.1",
+  "python-dotenv==1.2.4",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==9.1.1",
+  "ruff==0.17.1",
+]
+
+[project.scripts]
+futures-platform = "futures_bot.__main__:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
