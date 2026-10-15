@@ -49,6 +49,21 @@ with a dedicated database path `data/futures_platform.sqlite3`. Never reuse the
 legacy project's database or copy credentials into Git, the browser, or
 documentation.
 
+## Database schema
+
+The current Alembic revisions define versioned non-secret configuration,
+strategy snapshots, backtest runs, account snapshots, signals, orders, fills,
+positions, trades, risk events, audit events, and incidents. Initialize a new
+database with:
+
+```bash
+alembic upgrade head
+```
+
+The service does not yet connect to this schema; persistence integration is a
+later milestone. Migrations use the configured `BOT_DATABASE_URL` and do not
+automatically create or upgrade a database on application startup.
+
 ## Roadmap
 
 The implementation phases, acceptance criteria, architecture map, deployment

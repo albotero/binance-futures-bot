@@ -6,7 +6,7 @@ from futures_bot.config import Settings
 
 
 def test_settings_default_to_paper_testnet_and_private_database() -> None:
-    settings = Settings(_env_file=None)
+    settings = Settings.model_validate({})
 
     assert settings.mode == "paper"
     assert settings.exchange_environment == "testnet"
@@ -19,6 +19,7 @@ def test_settings_default_to_paper_testnet_and_private_database() -> None:
     [
         ("mode", "live"),
         ("exchange_environment", "mainnet"),
+        ("reporting_timezone", "Mars/Olympus"),
     ],
 )
 def test_settings_reject_unsupported_trading_state(
@@ -26,11 +27,11 @@ def test_settings_reject_unsupported_trading_state(
     value: str,
 ) -> None:
     with pytest.raises(ValueError):
-        Settings(_env_file=None, **{field: value})
+        Settings.model_validate({field: value})
 
 
 def test_health_is_liveness_only_and_live_trading_is_disabled() -> None:
-    client = TestClient(create_app(Settings(_env_file=None)))
+    client = TestClient(create_app(Settings.model_validate({})))
 
     response = client.get("/health")
 
@@ -45,7 +46,7 @@ def test_health_is_liveness_only_and_live_trading_is_disabled() -> None:
 
 
 def test_api_documentation_is_not_exposed_before_authentication() -> None:
-    client = TestClient(create_app(Settings(_env_file=None)))
+    client = TestClient(create_app(Settings.model_validate({})))
 
     assert client.get("/docs").status_code == 404
     assert client.get("/openapi.json").status_code == 404
