@@ -220,6 +220,24 @@ class FundingRate:
     mark_price: Decimal
 
 
+@dataclass(frozen=True, slots=True)
+class SymbolPriceTicker:
+    symbol: str
+    price: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class MarkPrice:
+    symbol: str
+    mark_price: Decimal
+    index_price: Decimal
+    estimated_settle_price: Decimal
+    last_funding_rate: Decimal
+    next_funding_time: datetime
+    interest_rate: Decimal
+    updated_at: datetime
+
+
 class BinanceUSDmClient:
     """Bounded, public-only REST client for Binance USDⓈ-M Futures."""
 
@@ -383,6 +401,39 @@ class BinanceUSDmClient:
         if funding_times != sorted(funding_times):
             raise BinancePayloadError("funding-rate response is not ordered")
         return rates
+
+    async def symbol_price_tickers(
+        self,
+        symbol: str | None = None,
+    ) -> tuple[SymbolPriceTicker, ...]:
+        if symbol is not None:
+            _validate_symbol(symbol)
+
+        params = {"symbol": symbol} if symbol is not None else None
+        payload = await self._get("/fapi/v2/ticker/price", params)
+        rows = _response_rows(payload, symbol, "symbol-price ticker")
+        tickers = tuple(_parse_symbol_price_ticker(row) for row in rows)
+        symbols = [ticker.symbol for ticker in tickers]
+        if len(symbols) != len(set(symbols)):
+            raise BinancePayloadError("duplicate symbols in symbol-price response")
+        if symbol is not None and symbols != [symbol]:
+            raise BinancePayloadError("symbol-price response does not match requested symbol")
+        return tickers
+
+    async def mark_prices(self, symbol: str | None = None) -> tuple[MarkPrice, ...]:
+        if symbol is not None:
+            _validate_symbol(symbol)
+
+        params = {"symbol": symbol} if symbol is not None else None
+        payload = await self._get("/fapi/v1/premiumIndex", params)
+        rows = _response_rows(payload, symbol, "mark-price")
+        prices = tuple(_parse_mark_price(row) for row in rows)
+        symbols = [price.symbol for price in prices]
+        if len(symbols) != len(set(symbols)):
+            raise BinancePayloadError("duplicate symbols in mark-price response")
+        if symbol is not None and symbols != [symbol]:
+            raise BinancePayloadError("mark-price response does not match requested symbol")
+        return prices
 
     async def _get(
         self,
@@ -554,6 +605,63 @@ def _parse_funding_rate(item: object) -> FundingRate:
         rate=rate,
         mark_price=mark_price,
     )
+
+
+def _response_rows(payload: object, symbol: str | None, name: str) -> tuple[object, ...]:
+    if symbol is not None:
+        if not isinstance(payload, dict):
+            raise BinancePayloadError(f"invalid {name} response")
+        return (payload,)
+    if not isinstance(payload, list):
+        raise BinancePayloadError(f"invalid {name} response")
+    return tuple(payload)
+
+
+def _parse_symbol_price_ticker(item: object) -> SymbolPriceTicker:
+    if not isinstance(item, dict):
+        raise BinancePayloadError("invalid symbol-price row in exchange response")
+    symbol = _response_symbol(item.get("symbol"), "symbol-price")
+    price = _decimal(item.get("price"), "symbol price")
+    if price <= 0:
+        raise BinancePayloadError("invalid symbol price in exchange response")
+    return SymbolPriceTicker(symbol=symbol, price=price)
+
+
+def _parse_mark_price(item: object) -> MarkPrice:
+    if not isinstance(item, dict):
+        raise BinancePayloadError("invalid mark-price row in exchange response")
+    symbol = _response_symbol(item.get("symbol"), "mark-price")
+    mark_price = _decimal(item.get("markPrice"), "mark price")
+    index_price = _decimal(item.get("indexPrice"), "index price")
+    estimated_settle_price = _decimal(
+        item.get("estimatedSettlePrice"), "estimated settle price"
+    )
+    last_funding_rate = _decimal(item.get("lastFundingRate"), "last funding rate")
+    interest_rate = _decimal(item.get("interestRate"), "interest rate")
+    if min(mark_price, index_price) <= 0 or estimated_settle_price < 0:
+        raise BinancePayloadError("invalid mark or index price in exchange response")
+    if interest_rate < 0:
+        raise BinancePayloadError("invalid interest rate in exchange response")
+    return MarkPrice(
+        symbol=symbol,
+        mark_price=mark_price,
+        index_price=index_price,
+        estimated_settle_price=estimated_settle_price,
+        last_funding_rate=last_funding_rate,
+        next_funding_time=_utc_from_milliseconds(item.get("nextFundingTime")),
+        interest_rate=interest_rate,
+        updated_at=_utc_from_milliseconds(item.get("time")),
+    )
+
+
+def _response_symbol(value: object, endpoint: str) -> str:
+    if not isinstance(value, str):
+        raise BinancePayloadError(f"invalid {endpoint} symbol in exchange response")
+    try:
+        _validate_symbol(value)
+    except ValueError as exc:
+        raise BinancePayloadError(f"invalid {endpoint} symbol in exchange response") from exc
+    return value
 
 
 def _retry_after_seconds(response: Response) -> float | None:

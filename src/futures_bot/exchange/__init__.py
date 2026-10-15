@@ -10,7 +10,9 @@ from futures_bot.exchange.binance_usdm import (
     ExchangeSymbol,
     FundingRate,
     Kline,
+    MarkPrice,
     SymbolFilter,
+    SymbolPriceTicker,
     SymbolRules,
 )
 
@@ -24,6 +26,8 @@ __all__ = [
     "ExchangeSymbol",
     "FundingRate",
     "Kline",
+    "MarkPrice",
     "SymbolFilter",
+    "SymbolPriceTicker",
     "SymbolRules",
 ]

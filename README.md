@@ -87,8 +87,8 @@ increase the position's configured loss-risk budget.
 
 The current Alembic revisions define versioned non-secret configuration,
 strategy snapshots, backtest runs, account snapshots, signals, orders, fills,
-positions, trades, risk events, audit events, and incidents. Initialize a new
-database with:
+positions, trades, risk events, audit events, incidents, and a normalized
+historical candle cache. Initialize a new database with:
 
 ```bash
 alembic upgrade head
@@ -101,14 +101,16 @@ automatically create or upgrade a database on application startup.
 ## Public exchange data
 
 The read-only USDⓈ-M adapter exposes public server time, exchange metadata,
-klines, and funding-rate history from the Binance Futures testnet or production
+symbol latest prices, mark prices and current funding data, klines, and
+historical funding-rate history from the Binance Futures testnet or production
 market-data API. It requires no API keys and has no order-submission methods.
 Responses are validated and normalized to UTC timestamps and `Decimal` values;
 requests use bounded concurrency, bounded retries, and sanitized errors.
 
-The adapter is not yet wired into the API, dashboard, cache, backtester, or
-paper-execution loop. Its unit tests use mocked HTTP responses and never call
-Binance.
+Historical candles can be fetched in bounded pages, checked for gaps, and
+stored in the SQLite cache. The data services are not yet orchestrated by the
+API, dashboard, backtester, or paper-execution loop. Unit tests use mocked HTTP
+responses and never call Binance.
 
 ## Operator configuration
 

@@ -11,6 +11,8 @@ from futures_bot.exchange import (
     BinancePayloadError,
     BinanceUSDmClient,
     ClockSkewError,
+    MarkPrice,
+    SymbolPriceTicker,
 )
 
 
@@ -258,6 +260,160 @@ def test_funding_rate_history_uses_decimal_and_utc_values() -> None:
     assert rates[0].rate == Decimal("0.00010000")
     assert rates[0].mark_price == Decimal("30000.00")
     assert rates[0].funding_time.isoformat() == "2023-11-14T22:13:20+00:00"
+
+
+def test_symbol_price_tickers_parse_single_and_bulk_responses() -> None:
+    requests: list[httpx2.Request] = []
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        if "symbol" in request.url.params:
+            return httpx2.Response(200, json={"symbol": "BTCUSDT", "price": "30123.45"})
+        return httpx2.Response(
+            200,
+            json=[
+                {"symbol": "BTCUSDT", "price": "30123.45"},
+                {"symbol": "ETHUSDT", "price": "1800.25"},
+            ],
+        )
+
+    async def read_prices(client: BinanceUSDmClient) -> tuple[
+        tuple[SymbolPriceTicker, ...], tuple[SymbolPriceTicker, ...]
+    ]:
+        return (
+            await client.symbol_price_tickers("BTCUSDT"),
+            await client.symbol_price_tickers(),
+        )
+
+    selected, all_symbols = run_client(
+        BinanceUSDmClient(transport=httpx2.MockTransport(handler)),
+        read_prices,
+    )
+
+    assert selected == (SymbolPriceTicker("BTCUSDT", Decimal("30123.45")),)
+    assert all_symbols == (
+        SymbolPriceTicker("BTCUSDT", Decimal("30123.45")),
+        SymbolPriceTicker("ETHUSDT", Decimal("1800.25")),
+    )
+    assert requests[0].url.path == "/fapi/v2/ticker/price"
+    assert requests[0].url.params["symbol"] == "BTCUSDT"
+    assert "symbol" not in requests[1].url.params
+
+
+@pytest.mark.parametrize(
+    ("payload", "symbol"),
+    [
+        ({"symbol": "BTCUSDT", "price": "0"}, "BTCUSDT"),
+        ({"symbol": "ETHUSDT", "price": "1"}, "BTCUSDT"),
+        (
+            [
+                {"symbol": "BTCUSDT", "price": "1"},
+                {"symbol": "BTCUSDT", "price": "2"},
+            ],
+            None,
+        ),
+    ],
+)
+def test_symbol_price_tickers_reject_invalid_or_ambiguous_payloads(
+    payload: object,
+    symbol: str | None,
+) -> None:
+    async def handler(_: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, json=payload)
+
+    with pytest.raises(BinancePayloadError):
+        run_client(
+            BinanceUSDmClient(transport=httpx2.MockTransport(handler)),
+            lambda client: client.symbol_price_tickers(symbol),
+        )
+
+
+def test_mark_prices_normalize_single_and_bulk_responses() -> None:
+    requests: list[httpx2.Request] = []
+    mark_payload = {
+        "symbol": "BTCUSDT",
+        "markPrice": "30100.25",
+        "indexPrice": "30099.75",
+        "estimatedSettlePrice": "0.00",
+        "lastFundingRate": "-0.00010000",
+        "nextFundingTime": 1_700_000_028_000,
+        "interestRate": "0.00010000",
+        "time": 1_700_000_000_000,
+    }
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        requests.append(request)
+        if "symbol" in request.url.params:
+            return httpx2.Response(200, json=mark_payload)
+        return httpx2.Response(
+            200,
+            json=[
+                mark_payload,
+                {
+                    **mark_payload,
+                    "symbol": "ETHUSDT",
+                    "markPrice": "1800",
+                    "indexPrice": "1799",
+                },
+            ],
+        )
+
+    async def read_prices(client: BinanceUSDmClient) -> tuple[
+        tuple[MarkPrice, ...], tuple[MarkPrice, ...]
+    ]:
+        return (
+            await client.mark_prices("BTCUSDT"),
+            await client.mark_prices(),
+        )
+
+    selected, all_symbols = run_client(
+        BinanceUSDmClient(transport=httpx2.MockTransport(handler)),
+        read_prices,
+    )
+
+    assert selected[0].mark_price == Decimal("30100.25")
+    assert selected[0].index_price == Decimal("30099.75")
+    assert selected[0].estimated_settle_price == Decimal("0.00")
+    assert selected[0].last_funding_rate == Decimal("-0.00010000")
+    assert selected[0].next_funding_time.isoformat() == "2023-11-14T22:13:48+00:00"
+    assert selected[0].updated_at.isoformat() == "2023-11-14T22:13:20+00:00"
+    assert len(all_symbols) == 2
+    assert requests[0].url.path == "/fapi/v1/premiumIndex"
+    assert requests[0].url.params["symbol"] == "BTCUSDT"
+    assert "symbol" not in requests[1].url.params
+
+
+def test_mark_prices_reject_invalid_prices_and_duplicate_symbols() -> None:
+    mark_payload = {
+        "symbol": "BTCUSDT",
+        "markPrice": "0",
+        "indexPrice": "30000",
+        "estimatedSettlePrice": "0",
+        "lastFundingRate": "0.0001",
+        "nextFundingTime": 1_700_000_028_000,
+        "interestRate": "0.0001",
+        "time": 1_700_000_000_000,
+    }
+
+    async def handler(_: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, json=[mark_payload, {**mark_payload, "markPrice": "1"}])
+
+    with pytest.raises(BinancePayloadError, match="mark or index price"):
+        run_client(
+            BinanceUSDmClient(transport=httpx2.MockTransport(handler)),
+            lambda client: client.mark_prices(),
+        )
+
+    valid_payload = {**mark_payload, "markPrice": "1"}
+
+    async def duplicate_handler(_: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, json=[valid_payload, valid_payload])
+
+    with pytest.raises(BinancePayloadError, match="duplicate symbols"):
+        run_client(
+            BinanceUSDmClient(transport=httpx2.MockTransport(duplicate_handler)),
+            lambda client: client.mark_prices(),
+        )
 
 
 def test_rate_limit_honors_retry_after_and_retries_within_bound() -> None:
