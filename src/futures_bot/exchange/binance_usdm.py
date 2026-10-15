@@ -633,9 +633,7 @@ def _parse_mark_price(item: object) -> MarkPrice:
     symbol = _response_symbol(item.get("symbol"), "mark-price")
     mark_price = _decimal(item.get("markPrice"), "mark price")
     index_price = _decimal(item.get("indexPrice"), "index price")
-    estimated_settle_price = _decimal(
-        item.get("estimatedSettlePrice"), "estimated settle price"
-    )
+    estimated_settle_price = _decimal(item.get("estimatedSettlePrice"), "estimated settle price")
     last_funding_rate = _decimal(item.get("lastFundingRate"), "last funding rate")
     interest_rate = _decimal(item.get("interestRate"), "interest rate")
     if min(mark_price, index_price) <= 0 or estimated_settle_price < 0:

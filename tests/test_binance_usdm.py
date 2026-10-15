@@ -277,9 +277,9 @@ def test_symbol_price_tickers_parse_single_and_bulk_responses() -> None:
             ],
         )
 
-    async def read_prices(client: BinanceUSDmClient) -> tuple[
-        tuple[SymbolPriceTicker, ...], tuple[SymbolPriceTicker, ...]
-    ]:
+    async def read_prices(
+        client: BinanceUSDmClient,
+    ) -> tuple[tuple[SymbolPriceTicker, ...], tuple[SymbolPriceTicker, ...]]:
         return (
             await client.symbol_price_tickers("BTCUSDT"),
             await client.symbol_price_tickers(),
@@ -358,9 +358,9 @@ def test_mark_prices_normalize_single_and_bulk_responses() -> None:
             ],
         )
 
-    async def read_prices(client: BinanceUSDmClient) -> tuple[
-        tuple[MarkPrice, ...], tuple[MarkPrice, ...]
-    ]:
+    async def read_prices(
+        client: BinanceUSDmClient,
+    ) -> tuple[tuple[MarkPrice, ...], tuple[MarkPrice, ...]]:
         return (
             await client.mark_prices("BTCUSDT"),
             await client.mark_prices(),

@@ -112,6 +112,18 @@ stored in the SQLite cache. The data services are not yet orchestrated by the
 API, dashboard, backtester, or paper-execution loop. Unit tests use mocked HTTP
 responses and never call Binance.
 
+## Risk-sizing status
+
+A standalone Decimal-based sizing module evaluates stop-based risk budgets,
+exchange price/quantity filters, account and market-data freshness, portfolio
+limits, protective-order/connectivity health, margin reserve, and the
+platform/exchange leverage ceilings. Quantity is rounded down to exchange
+increments, and leverage changes required margin only; it does not increase
+the risk budget. Estimated stop loss is a gross price-distance estimate and
+does not guarantee realized loss under slippage, gaps, fees, or liquidation.
+The risk engine is not yet connected to an account service, strategy, API,
+backtester, or paper-execution loop.
+
 ## Operator configuration
 
 The web-based configuration screen and its authenticated API are planned and
