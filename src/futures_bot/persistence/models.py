@@ -103,6 +103,47 @@ class BacktestRun(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
 
 
+class CandleRecord(Base):
+    __tablename__ = "candles"
+    __table_args__ = (
+        CheckConstraint("trade_count >= 0", name="ck_candles_trade_count_non_negative"),
+        CheckConstraint(
+            "open > 0 AND high > 0 AND low > 0 AND close > 0", name="ck_candles_price_positive"
+        ),
+        CheckConstraint(
+            "high >= open AND high >= close AND high >= low",
+            name="ck_candles_high_valid",
+        ),
+        CheckConstraint(
+            "low <= open AND low <= close AND low <= high",
+            name="ck_candles_low_valid",
+        ),
+        CheckConstraint(
+            "volume >= 0 AND quote_volume >= 0 AND "
+            "taker_buy_volume >= 0 AND taker_buy_quote_volume >= 0",
+            name="ck_candles_volume_non_negative",
+        ),
+        CheckConstraint("close_time > open_time", name="ck_candles_close_after_open"),
+        Index("ix_candles_interval_symbol_open_time", "interval", "symbol", "open_time"),
+    )
+
+    symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
+    interval: Mapped[str] = mapped_column(String(8), primary_key=True)
+    open_time: Mapped[datetime] = mapped_column(UTCDateTime(), primary_key=True)
+    close_time: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    open: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    high: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    low: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    close: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    volume: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    quote_volume: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    trade_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    taker_buy_volume: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    taker_buy_quote_volume: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="binance_usdm")
+    cached_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=utc_now)
+
+
 class AccountSnapshot(Base):
     __tablename__ = "account_snapshots"
     __table_args__ = (

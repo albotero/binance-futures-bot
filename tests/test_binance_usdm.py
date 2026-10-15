@@ -10,6 +10,7 @@ from futures_bot.exchange import (
     BinanceAPIError,
     BinancePayloadError,
     BinanceUSDmClient,
+    ClockSkewError,
 )
 
 
@@ -81,6 +82,27 @@ def test_exchange_information_validates_public_symbol_metadata() -> None:
                         "marginAsset": "USDT",
                         "pricePrecision": 2,
                         "quantityPrecision": 3,
+                        "filters": [
+                            {
+                                "filterType": "PRICE_FILTER",
+                                "minPrice": "0.01",
+                                "maxPrice": "1000000",
+                                "tickSize": "0.01",
+                            },
+                            {
+                                "filterType": "LOT_SIZE",
+                                "minQty": "0.001",
+                                "maxQty": "1000",
+                                "stepSize": "0.001",
+                            },
+                            {
+                                "filterType": "MARKET_LOT_SIZE",
+                                "minQty": "0",
+                                "maxQty": "1000",
+                                "stepSize": "0",
+                            },
+                            {"filterType": "MIN_NOTIONAL", "notional": "5"},
+                        ],
                     }
                 ]
             },
@@ -94,6 +116,36 @@ def test_exchange_information_validates_public_symbol_metadata() -> None:
     assert information.symbols[0].symbol == "BTCUSDT"
     assert information.symbols[0].contract_type == "PERPETUAL"
     assert information.symbols[0].quantity_precision == 3
+    rules = information.symbols[0].rules()
+    assert rules.price_tick == Decimal("0.01")
+    assert rules.quantity_step == Decimal("0.001")
+    assert rules.market_quantity_step == Decimal("0")
+    assert rules.min_notional == Decimal("5")
+
+
+def test_clock_skew_rejects_a_local_clock_outside_tolerance() -> None:
+    from datetime import UTC, datetime
+
+    from futures_bot.exchange import BinanceUSDmClient
+
+    fixed_local_time = datetime(2026, 10, 15, tzinfo=UTC)
+
+    async def handler(_: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            200,
+            json={"serverTime": int(fixed_local_time.timestamp() * 1000) + 5_000},
+        )
+
+    async def check() -> None:
+        async with BinanceUSDmClient(
+            transport=httpx2.MockTransport(handler),
+            backoff_seconds=0,
+            wall_clock=lambda: fixed_local_time,
+        ) as client:
+            with pytest.raises(ClockSkewError, match="differs from Binance"):
+                await client.clock_skew(max_skew_seconds=1)
+
+    asyncio.run(check())
 
 
 def test_klines_normalize_decimal_values_and_query_parameters() -> None:

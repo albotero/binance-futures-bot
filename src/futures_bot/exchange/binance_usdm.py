@@ -2,14 +2,22 @@ from __future__ import annotations
 
 import asyncio
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from email.utils import parsedate_to_datetime
 from typing import Literal
 
 from httpx2 import AsyncBaseTransport, AsyncClient, Limits, RequestError, Response
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 Environment = Literal["testnet", "production"]
 _BASE_URLS: dict[Environment, str] = {
@@ -44,6 +52,46 @@ class BinancePayloadError(ValueError):
     """The public API returned a response that failed validation."""
 
 
+class ClockSkewError(RuntimeError):
+    """Local clock offset exceeds the configured safe threshold."""
+
+
+class SymbolFilter(BaseModel):
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    filter_type: str = Field(alias="filterType")
+    min_price: Decimal | None = Field(default=None, alias="minPrice")
+    max_price: Decimal | None = Field(default=None, alias="maxPrice")
+    tick_size: Decimal | None = Field(default=None, alias="tickSize")
+    min_quantity: Decimal | None = Field(default=None, alias="minQty")
+    max_quantity: Decimal | None = Field(default=None, alias="maxQty")
+    step_size: Decimal | None = Field(default=None, alias="stepSize")
+    min_notional: Decimal | None = Field(default=None, alias="notional")
+
+
+@dataclass(frozen=True, slots=True)
+class SymbolRules:
+    symbol: str
+    price_tick: Decimal
+    min_price: Decimal
+    max_price: Decimal
+    quantity_step: Decimal
+    min_quantity: Decimal
+    max_quantity: Decimal
+    market_quantity_step: Decimal | None
+    market_min_quantity: Decimal | None
+    market_max_quantity: Decimal | None
+    min_notional: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
+class ClockSkew:
+    server_time: datetime
+    local_midpoint: datetime
+    offset: timedelta
+    round_trip: timedelta
+
+
 class ExchangeSymbol(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True, strict=True)
 
@@ -55,12 +103,92 @@ class ExchangeSymbol(BaseModel):
     margin_asset: str = Field(alias="marginAsset")
     price_precision: int = Field(alias="pricePrecision")
     quantity_precision: int = Field(alias="quantityPrecision")
+    filters: tuple[SymbolFilter, ...]
+
+    @field_validator("filters", mode="before")
+    @classmethod
+    def normalize_filters(cls, value: object) -> object:
+        if isinstance(value, list):
+            return tuple(value)
+        return value
 
     @field_validator("symbol")
     @classmethod
     def validate_symbol(cls, value: str) -> str:
         _validate_symbol(value)
         return value
+
+    @model_validator(mode="after")
+    def validate_filters(self) -> ExchangeSymbol:
+        filter_types = [item.filter_type for item in self.filters]
+        if len(filter_types) != len(set(filter_types)):
+            raise ValueError("duplicate symbol filters")
+        filters = {item.filter_type: item for item in self.filters}
+        price = filters.get("PRICE_FILTER")
+        lot = filters.get("LOT_SIZE")
+        if price is None or lot is None:
+            raise ValueError("symbol is missing required price or lot-size filters")
+        if (
+            price.tick_size is None
+            or price.min_price is None
+            or price.max_price is None
+            or lot.step_size is None
+            or lot.min_quantity is None
+            or lot.max_quantity is None
+            or price.tick_size <= 0
+            or lot.step_size <= 0
+            or min(
+                price.min_price,
+                price.max_price,
+                lot.min_quantity,
+                lot.max_quantity,
+            )
+            < 0
+            or price.max_price < price.min_price
+            or lot.max_quantity < lot.min_quantity
+        ):
+            raise ValueError("invalid price or lot-size filters")
+        for exchange_filter in self.filters:
+            if any(
+                value is not None and (not value.is_finite() or value < 0)
+                for value in (
+                    exchange_filter.min_price,
+                    exchange_filter.max_price,
+                    exchange_filter.tick_size,
+                    exchange_filter.min_quantity,
+                    exchange_filter.max_quantity,
+                    exchange_filter.step_size,
+                    exchange_filter.min_notional,
+                )
+            ):
+                raise ValueError("symbol filters must contain finite non-negative values")
+        return self
+
+    def rules(self) -> SymbolRules:
+        filters = {item.filter_type: item for item in self.filters}
+        price = filters["PRICE_FILTER"]
+        lot = filters["LOT_SIZE"]
+        market_lot = filters.get("MARKET_LOT_SIZE")
+        minimum_notional = filters.get("MIN_NOTIONAL")
+        assert price.tick_size is not None
+        assert price.min_price is not None
+        assert price.max_price is not None
+        assert lot.step_size is not None
+        assert lot.min_quantity is not None
+        assert lot.max_quantity is not None
+        return SymbolRules(
+            symbol=self.symbol,
+            price_tick=price.tick_size,
+            min_price=price.min_price,
+            max_price=price.max_price,
+            quantity_step=lot.step_size,
+            min_quantity=lot.min_quantity,
+            max_quantity=lot.max_quantity,
+            market_quantity_step=market_lot.step_size if market_lot else None,
+            market_min_quantity=market_lot.min_quantity if market_lot else None,
+            market_max_quantity=market_lot.max_quantity if market_lot else None,
+            min_notional=minimum_notional.min_notional if minimum_notional else None,
+        )
 
 
 class ExchangeInformation(BaseModel):
@@ -103,6 +231,7 @@ class BinanceUSDmClient:
         timeout_seconds: float = 10.0,
         max_retries: int = 2,
         backoff_seconds: float = 0.25,
+        wall_clock: Callable[[], datetime] | None = None,
     ) -> None:
         if not isinstance(environment, str) or environment not in _BASE_URLS:
             raise ValueError("environment must be testnet or production")
@@ -126,6 +255,7 @@ class BinanceUSDmClient:
         self.base_url = _BASE_URLS[environment]
         self._max_retries = max_retries
         self._backoff_seconds = backoff_seconds
+        self._wall_clock = wall_clock or (lambda: datetime.now(UTC))
         self._request_slots = asyncio.Semaphore(4)
         self._client = AsyncClient(
             base_url=self.base_url,
@@ -150,6 +280,40 @@ class BinanceUSDmClient:
         if not isinstance(payload, dict):
             raise BinancePayloadError("invalid server-time response")
         return _utc_from_milliseconds(payload.get("serverTime"))
+
+    async def clock_skew(self, max_skew_seconds: float = 1.0) -> ClockSkew:
+        if (
+            isinstance(max_skew_seconds, bool)
+            or not isinstance(max_skew_seconds, (int, float))
+            or not math.isfinite(max_skew_seconds)
+            or not 0 < max_skew_seconds <= 30
+        ):
+            raise ValueError("max_skew_seconds must be between 0 and 30 seconds")
+
+        local_before = self._wall_clock()
+        if local_before.tzinfo is None or local_before.utcoffset() is None:
+            raise ValueError("wall clock must return a timezone-aware datetime")
+        local_before = local_before.astimezone(UTC)
+        monotonic_before = asyncio.get_running_loop().time()
+        server = await self.server_time()
+        monotonic_after = asyncio.get_running_loop().time()
+        local_after = self._wall_clock()
+        if local_after.tzinfo is None or local_after.utcoffset() is None:
+            raise ValueError("wall clock must return a timezone-aware datetime")
+        local_after = local_after.astimezone(UTC)
+        round_trip = monotonic_after - monotonic_before
+        local_midpoint = local_before + (local_after - local_before) / 2
+        skew = ClockSkew(
+            server_time=server,
+            local_midpoint=local_midpoint,
+            offset=server - local_midpoint,
+            round_trip=timedelta(seconds=round_trip),
+        )
+        if abs(skew.offset.total_seconds()) > max_skew_seconds:
+            raise ClockSkewError(
+                f"local clock differs from Binance by {skew.offset.total_seconds():.3f}s"
+            )
+        return skew
 
     async def exchange_information(self) -> ExchangeInformation:
         payload = await self._get("/fapi/v1/exchangeInfo")

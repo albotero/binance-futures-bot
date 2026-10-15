@@ -16,7 +16,7 @@ dist/
 .eggs/
 node_modules/
 frontend/dist/
-data/
+/data/
 logs/
 *.log
 *.db

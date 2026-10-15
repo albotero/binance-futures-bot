@@ -14,6 +14,31 @@ shared strategy and risk components.
 - Do not run this foundation as a trading bot or treat `/health` as readiness.
 - No profitability or deployment claims are made.
 
+## Futures, cryptocurrency, and liability disclaimer
+
+Trading cryptocurrency futures is highly speculative and can result in rapid,
+substantial, or total loss. Leverage magnifies exposure and can trigger
+liquidation; depending on the product, exchange rules, and applicable law,
+losses may exceed the collateral committed. Crypto markets can be volatile,
+illiquid, interrupted, manipulated, or unavailable. Exchange failures, bad
+market data, network outages, software defects, configuration mistakes, and
+security incidents can also cause financial loss. Backtests and simulated
+results do not predict future performance.
+
+This project is provided **as-is for educational and research purposes**. It
+is not financial, investment, legal, or tax advice, and it is not an offer,
+solicitation, or recommendation to trade. No result, uptime, security, or
+profitability is guaranteed. The software is incomplete; do not use it to
+place live orders.
+
+You are solely responsible for evaluating, configuring, securing, and using
+this software, for your trading and compliance decisions, and for any use by
+people to whom you provide or deploy it. To the fullest extent permitted by
+applicable law, the author, contributors, and maintainers disclaim
+responsibility and liability for losses, claims, or damages arising from this
+software or its use by you or anyone else. This notice does not exclude
+liability or rights that cannot legally be excluded or waived.
+
 ## Development setup
 
 Python 3.12 is the minimum supported runtime. The foundation is also being
@@ -43,11 +68,20 @@ is implemented.
 
 ## Configuration
 
-The example file contains only non-secret defaults. Runtime settings use the
-`BOT_` prefix. The initial default is paper mode on the testnet environment,
-with a dedicated database path `data/futures_platform.sqlite3`. Never reuse the
-legacy project's database or copy credentials into Git, the browser, or
-documentation.
+The example file contains only bootstrap values. The initial safe defaults are
+paper mode, Binance testnet market data, and a dedicated database path
+`data/futures_platform.sqlite3`. The intended operator workflow is to configure
+symbols, strategy, risk limits, and per-symbol leverage in the authenticated
+web interface; these values are versioned and audited in the database rather
+than edited in `.env`. `.env` is reserved for host-specific bootstrap settings
+such as the database location and, only if needed in a later phase, secret
+injection. Exchange credentials are never exposed to the browser or saved as
+ordinary strategy configuration.
+
+Leverage is part of risk-controlled configuration, defaults to **1x**, and is
+planned to have a conservative platform cap of **20x** until separately
+reviewed. Leverage changes simulated margin requirements; it must never
+increase the position's configured loss-risk budget.
 
 ## Database schema
 
@@ -75,6 +109,14 @@ requests use bounded concurrency, bounded retries, and sanitized errors.
 The adapter is not yet wired into the API, dashboard, cache, backtester, or
 paper-execution loop. Its unit tests use mocked HTTP responses and never call
 Binance.
+
+## Operator configuration
+
+The web-based configuration screen and its authenticated API are planned and
+not yet implemented. Risk, symbol, strategy, and leverage settings are stored
+as versioned, audited database configuration; do not treat editing `.env` as
+the supported operator UI. The service still has no authentication or
+state-changing configuration endpoint.
 
 ## Roadmap
 
