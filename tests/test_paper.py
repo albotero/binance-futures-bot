@@ -172,6 +172,49 @@ def test_old_paper_snapshot_keeps_legacy_protection_but_new_runs_use_structure(f
         current = PaperConfiguration.model_validate(snapshot).strategy
         assert current.effective_time_stop_bars is None
         assert current.cost_filter == "gross_only"
+        assert (
+            PaperConfiguration.model_validate(snapshot).simulation.stop_risk_model
+            == "fees_and_slippage"
+        )
+        old_simulation = {
+            **snapshot,
+            "simulation": {
+                k: v for k, v in snapshot["simulation"].items() if k != "stop_risk_model"
+            },
+        }
+        assert (
+            PaperConfiguration.model_validate(old_simulation).simulation.stop_risk_model
+            == "price_only"
+        )
+
+
+def test_paper_entry_budget_includes_fees_and_slippage_in_persisted_breakdown(
+    factory, history, rules
+):
+    with factory() as session:
+        row = create_paper_run(
+            session,
+            "BTCUSDC",
+            BacktestConfiguration(
+                starting_balance="10000", fee_fraction=".0005", slippage_fraction=".0002"
+            ),
+            environment="production",
+            start=START,
+            actor="test",
+        )
+        control_paper_run(session, row.id, "resume", expected_version=row.version, actor="test")
+        session.commit()
+        run_id = row.id
+    row = process(factory, run_id, history, rules)
+    position = PaperState.model_validate(row.state).position
+    assert position is not None
+    sizing = position.entry_sizing
+    assert sizing is not None
+    assert sizing.estimated_stop_loss <= sizing.risk_budget
+    assert sizing.estimated_round_trip_fees > 0 and sizing.estimated_stop_slippage_loss > 0
+    with factory() as session:
+        event = session.scalar(select(PaperEvent))
+        assert Decimal(event.details["sizing"]["estimated_stop_loss"]) == sizing.estimated_stop_loss
 
 
 def test_restart_after_more_than_eight_bars_keeps_protected_position(factory, history, rules):

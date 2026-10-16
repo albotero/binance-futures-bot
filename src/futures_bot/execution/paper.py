@@ -8,7 +8,7 @@ from decimal import Context, Decimal, localcontext
 from typing import Any, Literal
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 from sqlalchemy import JSON, CheckConstraint, Integer, String, UniqueConstraint, select, update
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
@@ -32,6 +32,7 @@ from futures_bot.persistence.models import (
 )
 from futures_bot.persistence.repositories import ConfigurationConflict
 from futures_bot.risk.configuration import RiskConfiguration, load_risk_configuration
+from futures_bot.risk.engine import RiskDecision
 from futures_bot.strategy import EntrySetup, StrategyConfiguration, evaluate_pullback
 from futures_bot.strategy.configuration import load_strategy_configuration
 from futures_bot.strategy.lifecycle import evaluate_entry, evaluate_exit
@@ -88,6 +89,7 @@ class PaperPosition(BaseModel):
     leverage: int
     bars_held: int = 0
     funding_pnl: Decimal = ZERO
+    entry_sizing: RiskDecision | None = None
 
 
 class PaperState(BaseModel):
@@ -114,6 +116,13 @@ class PaperConfiguration(BaseModel):
     strategy: StrategyConfiguration
     simulation: BacktestConfiguration
     runtime_version: int = Field(ge=1)
+
+    @field_validator("simulation", mode="before")
+    @classmethod
+    def preserve_legacy_sizing(cls, value: object) -> object:
+        if isinstance(value, dict) and "stop_risk_model" not in value:
+            return {**value, "stop_risk_model": "price_only"}
+        return value
 
     @field_validator("strategy", mode="before")
     @classmethod
@@ -333,8 +342,15 @@ def process_paper_bar(
                         rules,
                         configuration.risk,
                         leverage,
+                        fee_fraction=configuration.simulation.fee_fraction
+                        if configuration.simulation.stop_risk_model == "fees_and_slippage"
+                        else ZERO,
+                        stop_slippage_fraction=configuration.simulation.slippage_fraction
+                        if configuration.simulation.stop_risk_model == "fees_and_slippage"
+                        else ZERO,
                     )
                     details["risk_reasons"] = list(decision.reasons)
+                    details["sizing"] = TypeAdapter(RiskDecision).dump_python(decision, mode="json")
                     if decision.accepted:
                         assert decision.quantity is not None
                         quantity = decision.quantity
@@ -355,6 +371,7 @@ def process_paper_bar(
                                 entry_fee=fee,
                                 entry_time=candle.open_time,
                                 leverage=leverage,
+                                entry_sizing=decision,
                             )
                             cash -= fee
                             entered = True

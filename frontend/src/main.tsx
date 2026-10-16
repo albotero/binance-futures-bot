@@ -228,6 +228,7 @@ function App() {
                 setRisk({ ...risk, quote_asset: quote, symbols: [] });
               }}><option>USDC</option><option>USDT</option></select></label>
               <p>Decimal limits use exact strings. Fractions are 0–1, not percentages. Set leverage independently for each asset, up to your Binance production account’s verified maximum. Larger positions have lower leverage limits; simulation sizing also respects the matching notional bracket. Higher leverage increases liquidation risk, not the stop-loss budget.</p>
+              <p>Risk fraction is the account loss budget at SL, not margin or position size. For example, 0.005 means at most 5 USDC of modeled stop loss on a 1,000 USDC selected balance/equity basis. New runs include entry/exit fees and expected stop slippage by default, keep the structural SL unchanged, and round quantity down. Safety caps may use less of that budget; gaps, funding and liquidation can still exceed it.</p>
               {leverageError && <p role="alert" className="error">{leverageError} Leverage controls and risk saves need verified brackets. Use Reload settings to retry; existing selections are unchanged.</p>}
               <p>Bracket limits are a current production-account snapshot, not historical guarantees or permission to trade live. New runs refresh the snapshot; existing runs retain their recorded limits.</p>
               {Object.entries(risk.policy).filter(([key]) => key !== "maximum_leverage").map(([key, value]) => <label key={key}>{key === "maximum_account_age" ? "Maximum balance-data age (ISO duration)" : key === "maximum_market_age" ? "Maximum price-data age (ISO duration)" : label(key)}
@@ -304,11 +305,15 @@ function App() {
             <label>Start (UTC ISO timestamp)<input required value={researchStart} onChange={e => setResearchStart(e.target.value)} /></label>
             <label>End (exclusive UTC ISO timestamp)<input required value={researchEnd} onChange={e => setResearchEnd(e.target.value)} /></label>
             {Object.entries(researchSimulation).map(([key, value]) => <label key={key}>{label(key)}
-              <input required value={value} onChange={e => setResearchSimulation({ ...researchSimulation, [key]: e.target.value })} />
+              {key === "stop_risk_model" ? <select value={value} onChange={e => setResearchSimulation({ ...researchSimulation, [key]: e.target.value })}>
+                <option value="fees_and_slippage">Total SL loss including fees and stop slippage (default)</option>
+                <option value="price_only">Legacy: price loss only (comparison)</option>
+              </select> : <input required value={value} onChange={e => setResearchSimulation({ ...researchSimulation, [key]: e.target.value })} />}
             </label>)}
             <button type="submit">Run and save research</button>
           </fieldset></form>
         </details>
+        <p>Position quantity uses your saved account-risk fraction divided by modeled loss per unit at SL, including both trading fees and expected adverse stop slippage by default. Notional, margin and Binance limits can reduce actual risk below the requested percentage; entry sizing details are recorded in each new trade. Gaps, liquidation and funding can exceed the estimate.</p>
         <p>Persisted results below are read-only. CSV exports include holdout trades for validation runs.</p>
         {runs.length === 0 ? <p>No research runs on this page.</p> : <div className="scroll"><table><thead><tr><th>Created</th><th>Status</th><th>Dataset</th><th>Results</th></tr></thead><tbody>
           {runs.map(run => <tr key={run.id}><td>{run.created_at}</td><td>{run.status}</td><td><pre>{JSON.stringify(run.dataset_metadata, null, 2)}</pre></td><td>
@@ -350,7 +355,10 @@ function App() {
               <option value="testnet">Testnet market data</option><option value="production">Production public market data (paper only)</option>
             </select></label>
             <label>First 15-minute bar (UTC ISO timestamp)<input required value={paperStart} onChange={e => setPaperStart(e.target.value)} /></label>
-            {Object.entries(simulation).map(([key, value]) => <label key={key}>{label(key)}<input required value={value} onChange={e => setSimulation({ ...simulation, [key]: e.target.value })} /></label>)}
+            {Object.entries(simulation).map(([key, value]) => <label key={key}>{label(key)}{key === "stop_risk_model" ? <select value={value} onChange={e => setSimulation({ ...simulation, [key]: e.target.value })}>
+              <option value="fees_and_slippage">Total SL loss including fees and stop slippage (default)</option>
+              <option value="price_only">Legacy: price loss only (comparison)</option>
+            </select> : <input required value={value} onChange={e => setSimulation({ ...simulation, [key]: e.target.value })} />}</label>)}
             <button type="submit">Create paused simulation</button>
           </fieldset></form>
         </article><article><h3>Persisted paper portfolios</h3>

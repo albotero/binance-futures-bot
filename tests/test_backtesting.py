@@ -162,6 +162,51 @@ def test_stop_first_ambiguity_and_adverse_open_gap(history, rules, risk) -> None
     assert result.win_rate == 0
 
 
+@pytest.mark.parametrize("short", [False, True])
+def test_stop_fill_total_loss_matches_sizing_estimate_without_gap_or_funding(
+    history, rules, risk, short
+):
+    hourly, entries = history
+    if short:
+
+        def mirror(c):
+            return replace(
+                c, open=1000 - c.open, high=1000 - c.low, low=1000 - c.high, close=1000 - c.close
+            )
+
+        hourly, entries = tuple(map(mirror, hourly)), tuple(map(mirror, entries))
+    config = BacktestConfiguration(
+        starting_balance="10000", fee_fraction=".0005", slippage_fraction=".0002"
+    )
+    setup = evaluate_pullback(
+        "BTCUSDC",
+        hourly,
+        entries,
+        rules,
+        StrategyConfiguration(),
+        as_of=START,
+        expected_entry_slippage=config.slippage_fraction,
+    ).setup
+    assert setup is not None
+    second = (
+        replace(entries[-3], high=setup.stop_price + 1, close=setup.stop_price)
+        if short
+        else replace(
+            entries[-3],
+            low=setup.stop_price - 1,
+            close=setup.stop_price,
+        )
+    )
+    result = simulate(
+        (hourly, (*entries[:-3], second, *entries[-2:])), rules, risk, configuration=config
+    )
+    trade = result.trades[0]
+    assert trade.exit_reason == "stop" and trade.entry_sizing is not None
+    assert -trade.net_pnl == trade.entry_sizing.estimated_stop_loss
+    assert -trade.net_pnl <= trade.entry_sizing.risk_budget
+    assert trade.entry_sizing.estimated_price_loss < trade.entry_sizing.estimated_stop_loss
+
+
 def test_time_stop_uses_shared_lifecycle(history, rules, risk) -> None:
     result = simulate(
         history,
@@ -448,8 +493,25 @@ def test_entry_fees_cannot_overdraw_margin_reserve(history, rules, risk) -> None
             starting_balance="10000", fee_fraction="0.01", slippage_fraction="0"
         ),
     )
-    assert not result.trades
-    assert any("entry fee" in reason for _, reasons in result.risk_rejections for reason in reasons)
+    assert result.trades
+    trade = result.trades[0]
+    sizing = trade.entry_sizing
+    assert sizing is not None
+    assert "margin after reserve and entry fee" in sizing.sizing_constraints
+    assert sizing.margin_required + trade.quantity * trade.entry_price * D(".01") <= D(9000)
+    legacy = simulate(
+        history,
+        rules,
+        risk,
+        configuration=BacktestConfiguration(
+            starting_balance="10000",
+            fee_fraction="0.01",
+            slippage_fraction="0",
+            stop_risk_model="price_only",
+        ),
+    )
+    assert not legacy.trades
+    assert any("entry fee" in reason for _, reasons in legacy.risk_rejections for reason in reasons)
 
 
 def test_saved_result_and_csv_round_trip(history, rules, risk, tmp_path) -> None:

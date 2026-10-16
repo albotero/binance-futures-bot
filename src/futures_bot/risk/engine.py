@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from decimal import ROUND_FLOOR, Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import Literal
 
 from futures_bot.exchange.binance_usdm import SymbolRules, validate_symbol_name
@@ -140,6 +140,8 @@ class RiskRequest:
     market_time: datetime
     target_price: Decimal | None = None
     exchange_notional_cap: Decimal | None = None
+    fee_fraction: Decimal = _ZERO
+    stop_slippage_fraction: Decimal = _ZERO
 
     def __post_init__(self) -> None:
         validate_symbol_name(self.symbol)
@@ -147,6 +149,11 @@ class RiskRequest:
             raise ValueError("direction must be long or short")
         _require_decimal(self.entry_price, "entry_price")
         _require_decimal(self.stop_price, "stop_price")
+        for name in ("fee_fraction", "stop_slippage_fraction"):
+            value = getattr(self, name)
+            _require_decimal(value, name)
+            if not _ZERO <= value < _ONE:
+                raise ValueError(f"{name} must be at least zero and less than one")
         if self.target_price is not None:
             _require_decimal(self.target_price, "target_price")
         if type(self.leverage) is not int or self.leverage < 1:
@@ -174,6 +181,12 @@ class RiskDecision:
     notional: Decimal | None = None
     margin_required: Decimal | None = None
     estimated_stop_loss: Decimal | None = None
+    estimated_price_loss: Decimal | None = None
+    estimated_stop_slippage_loss: Decimal | None = None
+    estimated_round_trip_fees: Decimal | None = None
+    expected_stop_fill: Decimal | None = None
+    effective_risk_fraction: Decimal | None = None
+    sizing_constraints: tuple[str, ...] = ()
 
 
 def size_position(
@@ -281,12 +294,33 @@ def size_position(
         return _denied(("no margin available after required reserve",), risk_budget, stop_distance)
 
     quantity_step, minimum_quantity, maximum_quantity = _quantity_rules(rules)
-    notional_cap = min(
-        policy.maximum_position_notional,
-        exposure_room,
-        available_margin * request.leverage,
-        maximum_quantity * request.entry_price,
-    )
+    stop_fill = (
+        request.stop_price
+        * (
+            _ONE - request.stop_slippage_fraction
+            if request.direction == "long"
+            else _ONE + request.stop_slippage_fraction
+        )
+        / rules.price_tick
+    ).to_integral_value(
+        rounding=ROUND_FLOOR if request.direction == "long" else ROUND_CEILING
+    ) * rules.price_tick
+    if stop_fill <= _ZERO:
+        return _denied(("modeled stop fill must be positive",), risk_budget, stop_distance)
+    slippage_per_unit = abs(request.stop_price - stop_fill)
+    fees_per_unit = (request.entry_price + stop_fill) * request.fee_fraction
+    loss_per_unit = stop_distance + slippage_per_unit + fees_per_unit
+    constraints = {
+        "account risk budget": risk_budget / loss_per_unit,
+        "aggregate risk limit": (policy.maximum_aggregate_risk - portfolio.aggregate_open_risk)
+        / loss_per_unit,
+        "daily loss limit": (policy.maximum_daily_loss - portfolio.daily_loss) / loss_per_unit,
+        "position notional cap": policy.maximum_position_notional / request.entry_price,
+        "total exposure cap": exposure_room / request.entry_price,
+        "margin after reserve and entry fee": available_margin
+        / (request.entry_price / request.leverage + request.entry_price * request.fee_fraction),
+        "exchange maximum quantity": maximum_quantity,
+    }
     if request.exchange_notional_cap is not None:
         bracket_room = request.exchange_notional_cap - account.open_exposure
         if bracket_room <= _ZERO:
@@ -295,13 +329,13 @@ def size_position(
                 risk_budget,
                 stop_distance,
             )
-        notional_cap = min(notional_cap, bracket_room)
-    quantity_cap = min(available_risk / stop_distance, notional_cap / request.entry_price)
+        constraints["Binance leverage bracket"] = bracket_room / request.entry_price
+    quantity_cap = min(constraints.values())
     quantity = (quantity_cap / quantity_step).to_integral_value(
         rounding=ROUND_FLOOR
     ) * quantity_step
     notional = quantity * request.entry_price
-    estimated_loss = quantity * stop_distance
+    estimated_loss = quantity * loss_per_unit
     margin_required = notional / request.leverage
 
     if quantity <= _ZERO or quantity < minimum_quantity:
@@ -316,9 +350,9 @@ def size_position(
             risk_budget,
             stop_distance,
         )
-    if margin_required > available_margin:
+    if margin_required + quantity * request.entry_price * request.fee_fraction > available_margin:
         return _denied(
-            ("sized order exceeds available margin after reserve",),
+            ("sized order and entry fee exceed available margin after reserve",),
             risk_budget,
             stop_distance,
         )
@@ -331,6 +365,13 @@ def size_position(
         notional=notional,
         margin_required=margin_required,
         estimated_stop_loss=estimated_loss,
+        estimated_price_loss=quantity * stop_distance,
+        estimated_stop_slippage_loss=quantity * slippage_per_unit,
+        estimated_round_trip_fees=quantity * fees_per_unit,
+        expected_stop_fill=stop_fill,
+        effective_risk_fraction=estimated_loss / risk_basis,
+        sizing_constraints=tuple(name for name, cap in constraints.items() if cap == quantity_cap)
+        + (("exchange quantity-step rounding",) if quantity < quantity_cap else ()),
     )
 
 

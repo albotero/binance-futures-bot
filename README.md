@@ -276,8 +276,37 @@ exchange price/quantity filters, account and market-data freshness, portfolio
 limits, protective-order/connectivity health, margin reserve, and the
 platform/exchange leverage ceilings. Quantity is rounded down to exchange
 increments, and leverage changes required margin only; it does not increase
-the risk budget. Estimated stop loss is a gross price-distance estimate and
-does not guarantee realized loss under slippage, gaps, fees, or liquidation.
+the risk budget. New research and paper runs default to
+`simulation.stop_risk_model="fees_and_slippage"`:
+
+1. `risk_budget = selected_account_balance_or_equity * risk_fraction`.
+2. Keep the strategy's structural stop price unchanged. From the actual
+   adverse entry fill, model the stop fill with adverse slippage and exchange
+   tick rounding (down for a long exit, up for a short exit).
+3. Per-unit stop loss is `abs(entry - modeled_stop_fill) +
+   (entry + modeled_stop_fill) * fee_fraction`. This includes entry and stop
+   exit fees; entry slippage is already in the actual entry price.
+4. Quantity is the risk budget divided by that per-unit loss, subject to
+   remaining aggregate/daily-risk capacity, notional/exposure/bracket limits,
+   exchange quantity limits, and margin reserve **including entry fees**.
+   Round down to the permitted exchange quantity increment.
+
+For example, a 1,000 USDC selected balance with `risk_fraction="0.005"` means
+at most 5 USDC of **modeled loss at SL**, not 5 USDC of margin/notional. Caps
+and quantity rounding may use less; the engine never increases size past
+those limits merely to spend the full budget. Leverage does not multiply this
+loss budget. Future funding, unexpected gaps, liquidation and different fills
+can still exceed the estimate; this is not a guaranteed maximum real loss.
+
+Each new backtest trade and paper position/event records an entry-sizing
+breakdown: budget, price loss, modeled stop slippage, round-trip fees, stop fill,
+effective account-risk fraction and binding sizing constraints. `estimated_stop_loss`
+is now the total modeled loss for cost-inclusive requests. Standalone risk
+requests accept explicit exact `fee_fraction` and `stop_slippage_fraction`;
+both default to zero for existing callers that have no execution-cost data.
+The optional `price_only` simulation mode reproduces legacy gross-loss sizing.
+Existing paper snapshots without this field explicitly retain `price_only`;
+their positions and pending setups are not silently resized.
 The configured entry evaluator loads versioned risk settings and the latest
 normalized account snapshot for the explicitly selected environment. It
 returns the configuration version, snapshot ID, applied leverage, and risk
@@ -285,7 +314,8 @@ decision. Missing/invalid settings or missing account state fail explicitly;
 stale snapshots reject the entry. Account snapshots are stored independently
 for simulated, testnet, and production environments, with no cross-environment
 fallback. The offline backtester uses this same risk engine. Exchange account
-fetching, API controls, and paper-loop integration remain pending.
+fetching remains absent for live execution; the authenticated research and
+persistent paper loop use the same shared sizing implementation.
 
 ## Operator configuration
 

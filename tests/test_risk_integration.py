@@ -338,6 +338,30 @@ def test_configured_evaluation_uses_persisted_leverage_and_tracks_provenance(
     assert result.decision.estimated_stop_loss <= result.decision.risk_budget
 
 
+def test_configured_entry_preserves_cost_assumptions_when_applying_symbol_limits(
+    session,
+    settings,
+    account_state,
+    entry,
+    portfolio,
+):
+    save_risk_configuration(session, settings, actor="operator", expected_version=0)
+    save_account_state(session, account_state, environment="simulated")
+    session.commit()
+    result = evaluate_configured_entry(
+        session,
+        replace(entry, fee_fraction=Decimal(".0005"), stop_slippage_fraction=Decimal(".0002")),
+        portfolio,
+        environment="simulated",
+        now=NOW,
+    )
+    decision = result.decision
+    assert decision.accepted
+    assert decision.estimated_round_trip_fees > 0
+    assert decision.estimated_stop_slippage_loss > 0
+    assert decision.estimated_stop_loss <= decision.risk_budget
+
+
 def test_saved_risk_changes_affect_subsequent_decisions(
     session: Session,
     settings: RiskConfiguration,

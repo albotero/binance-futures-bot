@@ -111,6 +111,95 @@ def test_size_is_decimal_step_aligned_and_leverage_does_not_raise_risk() -> None
     assert five_x.margin_required == Decimal("1000")
 
 
+@pytest.mark.parametrize("short", [False, True])
+def test_total_stop_loss_uses_account_percentage_including_costs(short):
+    side = "short" if short else "long"
+    stop = Decimal(102) if short else Decimal(98)
+    target = Decimal(96) if short else Decimal(104)
+    params = dict(
+        direction=side,
+        stop_price=stop,
+        target_price=target,
+        fee_fraction=Decimal(".0005"),
+        stop_slippage_fraction=Decimal(".0002"),
+    )
+    result = size_position(request(**params), account(), portfolio(), policy(), now=NOW)
+    assert result.accepted
+    fill = Decimal("102.1") if short else Decimal("97.9")
+    per_unit = abs(Decimal(100) - fill) + (Decimal(100) + fill) * Decimal(".0005")
+    assert result.expected_stop_fill == fill
+    assert result.estimated_stop_loss == result.quantity * per_unit <= Decimal(100)
+    assert (result.quantity + Decimal(".1")) * per_unit > Decimal(100)
+    assert (
+        result.estimated_price_loss
+        + result.estimated_stop_slippage_loss
+        + result.estimated_round_trip_fees
+        == result.estimated_stop_loss
+    )
+    assert result.effective_risk_fraction <= Decimal(".01")
+    assert result.quantity < Decimal(50)
+    assert "account risk budget" in result.sizing_constraints
+    leveraged = size_position(
+        request(**params, leverage=20),
+        account(),
+        portfolio(),
+        policy(),
+        now=NOW,
+    )
+    assert leveraged.quantity == result.quantity
+    assert leveraged.estimated_stop_loss == result.estimated_stop_loss
+
+
+def test_cost_inclusive_sizing_respects_selected_basis_and_notional_cap():
+    params = request(fee_fraction=Decimal(".0005"), stop_slippage_fraction=Decimal(".0002"))
+    available = size_position(
+        params,
+        account(),
+        portfolio(),
+        policy(basis="available_balance"),
+        now=NOW,
+    )
+    assert available.risk_budget == Decimal(90)
+    assert available.estimated_stop_loss <= Decimal(90)
+    capped = size_position(
+        params,
+        account(),
+        portfolio(),
+        policy(maximum_position_notional=Decimal(1000)),
+        now=NOW,
+    )
+    assert capped.notional == Decimal(1000)
+    assert capped.estimated_stop_loss < capped.risk_budget
+    assert "position notional cap" in capped.sizing_constraints
+    assert capped.effective_risk_fraction < Decimal(".01")
+
+
+@pytest.mark.parametrize("field", ["fee_fraction", "stop_slippage_fraction"])
+@pytest.mark.parametrize(
+    "value", [Decimal("-0.1"), Decimal(1), Decimal("NaN"), Decimal("Infinity"), 0.001]
+)
+def test_sizing_costs_must_be_finite_exact_valid_fractions(field, value):
+    with pytest.raises(ValueError):
+        request(**{field: value})
+
+
+def test_fee_aware_margin_capacity_is_reduced_not_silently_overdrawn():
+    result = size_position(
+        request(fee_fraction=Decimal(".01")),
+        account(available_balance=Decimal(100)),
+        portfolio(),
+        policy(
+            basis="available_balance",
+            risk_fraction=Decimal(".5"),
+            margin_reserve_fraction=Decimal(".1"),
+        ),
+        now=NOW,
+    )
+    assert result.accepted
+    assert result.margin_required + result.quantity * Decimal(100) * Decimal(".01") <= Decimal(90)
+    assert "margin after reserve and entry fee" in result.sizing_constraints
+
+
 def test_50x_requires_exchange_permission_but_not_a_portfolio_cap():
     baseline = size_position(request(), account(), portfolio(), policy(), now=NOW)
     high = size_position(

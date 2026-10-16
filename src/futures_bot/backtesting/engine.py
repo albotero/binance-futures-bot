@@ -25,7 +25,7 @@ from futures_bot.strategy.pullback import (
 )
 
 ZERO = Decimal(0)
-BACKTEST_VERSION = "single-symbol-bars-v3"
+BACKTEST_VERSION = "single-symbol-bars-v4"
 
 
 class BacktestConfiguration(BaseModel):
@@ -37,6 +37,7 @@ class BacktestConfiguration(BaseModel):
     maintenance_margin_fraction: Decimal = Field(default=Decimal("0.01"), gt=0, lt=1)
     liquidation_fee_fraction: Decimal = Field(default=Decimal("0.005"), ge=0, le=Decimal("0.1"))
     reporting_timezone: str = "America/Bogota"
+    stop_risk_model: Literal["fees_and_slippage", "price_only"] = "fees_and_slippage"
 
     @field_validator(
         "starting_balance",
@@ -83,6 +84,7 @@ class SimulatedTrade(BaseModel):
     target_price: Decimal | None = None
     stop_level: StructureLevel | None = None
     target_level: StructureLevel | None = None
+    entry_sizing: RiskDecision | None = None
 
 
 class EquityPoint(BaseModel):
@@ -127,6 +129,7 @@ class _OpenPosition:
     entry_time: datetime
     entry_fee: Decimal
     leverage: int
+    entry_sizing: RiskDecision | None = None
     funding_pnl: Decimal = ZERO
     bars_held: int = 0
 
@@ -282,6 +285,12 @@ def _run_backtest(
                         rules,
                         risk,
                         symbol_settings.leverage,
+                        fee_fraction=configuration.fee_fraction
+                        if configuration.stop_risk_model == "fees_and_slippage"
+                        else ZERO,
+                        stop_slippage_fraction=configuration.slippage_fraction
+                        if configuration.stop_risk_model == "fees_and_slippage"
+                        else ZERO,
                     )
                     if decision.accepted:
                         assert decision.quantity is not None
@@ -303,6 +312,7 @@ def _run_backtest(
                                 entry_time=time,
                                 entry_fee=fee,
                                 leverage=symbol_settings.leverage,
+                                entry_sizing=decision,
                             )
                             entered = True
                     else:
@@ -380,6 +390,7 @@ def _run_backtest(
                         target_price=open_position.setup.target_price,
                         stop_level=open_position.setup.stop_level,
                         target_level=open_position.setup.target_level,
+                        entry_sizing=open_position.entry_sizing,
                     )
                 )
                 open_position = None
@@ -438,7 +449,8 @@ def _run_backtest(
             "Historical funding must be supplied; an empty series explicitly models zero funding.",
             "Intrabar entry/exit funding ambiguity charges debits but omits uncertain credits.",
             "Static exchange rules and leverage limits are assumed throughout the range.",
-            "Risk estimates exclude costs and gaps; realized losses can exceed the risk budget.",
+            "Cost-inclusive stop sizing models both fees and adverse stop slippage; legacy "
+            "price-only mode excludes costs. Gaps, funding or liquidation can exceed the budget.",
             "Remaining positions close at the dataset end for accounting, not a holding timer.",
             "The entry cost filter models fees/slippage, not future funding or gap losses.",
         ),
@@ -457,6 +469,9 @@ def _size_entry(
     rules: SymbolRules,
     risk: RiskConfiguration,
     leverage: int,
+    *,
+    fee_fraction: Decimal = ZERO,
+    stop_slippage_fraction: Decimal = ZERO,
 ) -> RiskDecision:
     account = AccountState(
         wallet_balance=max(ZERO, cash),
@@ -493,6 +508,8 @@ def _size_entry(
         symbol_rules=rules,
         market_time=time,
         exchange_notional_cap=schedule.notional_limit(leverage) if schedule is not None else None,
+        fee_fraction=fee_fraction,
+        stop_slippage_fraction=stop_slippage_fraction,
     )
     decision = size_position(request, account, portfolio, risk.policy, now=time)
     if decision.accepted and setup.minimum_reward_to_risk is not None:
