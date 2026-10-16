@@ -96,3 +96,18 @@ def test_time_stop_on_eighth_bar_and_protection_takes_priority() -> None:
     assert stopped is not None and stopped.reason == "stop"
     target = evaluate_exit(setup(), candle(high="105"), bars_held=8)
     assert target is not None and target.reason == "target"
+
+
+@pytest.mark.parametrize("short", [False, True])
+def test_protective_only_position_never_expires_but_keeps_stop_and_target(short):
+    signal = replace(setup(short), time_stop_bars=None)
+    for held in (8, 100, 10000):
+        assert evaluate_exit(signal, candle(), bars_held=held) is None
+    stopped = evaluate_exit(signal, candle(low="97", high="103"), bars_held=10001)
+    assert stopped is not None and stopped.reason == "stop"
+    target = evaluate_exit(
+        signal,
+        candle(high="101", low="95") if short else candle(high="105"),
+        bars_held=10001,
+    )
+    assert target is not None and target.reason == "target"

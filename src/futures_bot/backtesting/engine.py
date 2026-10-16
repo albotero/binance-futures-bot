@@ -17,10 +17,15 @@ from futures_bot.risk.configuration import RiskConfiguration
 from futures_bot.risk.engine import UNVERIFIED_SIMULATION_MAX_LEVERAGE
 from futures_bot.strategy import EntrySetup, StrategyConfiguration, evaluate_pullback
 from futures_bot.strategy.lifecycle import evaluate_entry, evaluate_exit
-from futures_bot.strategy.pullback import StructureLevel, _validate_candles, adverse_fill_price
+from futures_bot.strategy.pullback import (
+    StructureLevel,
+    _validate_candles,
+    adverse_fill_price,
+    net_reward_to_risk_passes,
+)
 
 ZERO = Decimal(0)
-BACKTEST_VERSION = "single-symbol-bars-v2"
+BACKTEST_VERSION = "single-symbol-bars-v3"
 
 
 class BacktestConfiguration(BaseModel):
@@ -195,6 +200,7 @@ def _run_backtest(
         as_of=start,
         expected_entry_slippage=configuration.slippage_fraction,
         minimum_reward_to_risk=risk.policy.minimum_reward_to_risk,
+        expected_fee_fraction=configuration.fee_fraction,
     )
     _require_history(initial.reason)
     rates = _validate_funding(funding_rates, symbol, start, end)
@@ -246,6 +252,7 @@ def _run_backtest(
                 as_of=time,
                 expected_entry_slippage=configuration.slippage_fraction,
                 minimum_reward_to_risk=risk.policy.minimum_reward_to_risk,
+                expected_fee_fraction=configuration.fee_fraction,
             )
             observations[evaluation.reason] = observations.get(evaluation.reason, 0) + 1
             _require_history(evaluation.reason)
@@ -432,6 +439,8 @@ def _run_backtest(
             "Intrabar entry/exit funding ambiguity charges debits but omits uncertain credits.",
             "Static exchange rules and leverage limits are assumed throughout the range.",
             "Risk estimates exclude costs and gaps; realized losses can exceed the risk budget.",
+            "Remaining positions close at the dataset end for accounting, not a holding timer.",
+            "The entry cost filter models fees/slippage, not future funding or gap losses.",
         ),
     )
 
@@ -494,6 +503,22 @@ def _size_entry(
             return RiskDecision(
                 accepted=False,
                 reasons=("actual fill fails the setup minimum reward-to-risk",),
+                risk_budget=decision.risk_budget,
+                stop_distance=decision.stop_distance,
+            )
+        if setup.expected_fee_fraction is not None and not net_reward_to_risk_passes(
+            price,
+            setup.stop_price,
+            setup.target_price,
+            setup.direction == "long",
+            setup.expected_fee_fraction,
+            setup.expected_exit_slippage,
+            rules.price_tick,
+            setup.minimum_reward_to_risk,
+        ):
+            return RiskDecision(
+                accepted=False,
+                reasons=("actual fill fails the setup cost-adjusted minimum reward-to-risk",),
                 risk_budget=decision.risk_budget,
                 stop_distance=decision.stop_distance,
             )

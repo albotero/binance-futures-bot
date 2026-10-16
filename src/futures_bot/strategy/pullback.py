@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, m
 from futures_bot.data.candles import find_candle_gaps
 from futures_bot.exchange import Kline, SymbolRules
 
-STRATEGY_VERSION = "ema-pullback-sr-v2"
+STRATEGY_VERSION = "ema-pullback-sr-v3"
 Direction = Literal["long", "short"]
 
 
@@ -28,6 +28,8 @@ class StrategyConfiguration(BaseModel):
     reward_multiple: Decimal = Field(default=Decimal("2"), ge=1, le=10)
     entry_expiry_bars: StrictInt = Field(default=3, ge=1, le=20)
     time_stop_bars: StrictInt = Field(default=8, ge=1, le=100)
+    exit_policy: Literal["protective_only", "legacy_time_limit"] = "protective_only"
+    cost_filter: Literal["net_reward_risk", "gross_only"] = "gross_only"
     protection_mode: Literal["support_resistance", "legacy_atr"] = "support_resistance"
     level_lookback_bars: StrictInt = Field(default=96, ge=10, le=500)
     pivot_confirmation_bars: StrictInt = Field(default=2, ge=1, le=10)
@@ -53,9 +55,19 @@ class StrategyConfiguration(BaseModel):
 
     @property
     def implementation(self) -> str:
-        return (
-            STRATEGY_VERSION if self.protection_mode == "support_resistance" else "ema-pullback-v1"
-        )
+        if self.protection_mode == "legacy_atr":
+            return (
+                "ema-pullback-v1"
+                if self.exit_policy == "legacy_time_limit"
+                else "ema-pullback-atr-v3"
+            )
+        if self.exit_policy == "legacy_time_limit" and self.cost_filter == "gross_only":
+            return "ema-pullback-sr-v2"
+        return STRATEGY_VERSION
+
+    @property
+    def effective_time_stop_bars(self) -> int | None:
+        return self.time_stop_bars if self.exit_policy == "legacy_time_limit" else None
 
     @property
     def entry_history_bars(self) -> int:
@@ -129,6 +141,25 @@ def adverse_fill_price(price: Decimal, buy: bool, fraction: Decimal, tick: Decim
     return _round_price(adjusted, tick, ROUND_CEILING if buy else ROUND_FLOOR)
 
 
+def net_reward_to_risk_passes(
+    entry: Decimal,
+    stop: Decimal,
+    target: Decimal,
+    buy: bool,
+    fee_fraction: Decimal,
+    exit_slippage: Decimal,
+    tick: Decimal,
+    minimum_ratio: Decimal,
+) -> bool:
+    stop_fill = adverse_fill_price(stop, not buy, exit_slippage, tick)
+    target_fill = adverse_fill_price(target, not buy, exit_slippage, tick)
+    reward = target_fill - entry if buy else entry - target_fill
+    loss = entry - stop_fill if buy else stop_fill - entry
+    net_reward = reward - (entry + target_fill) * fee_fraction
+    net_loss = loss + (entry + stop_fill) * fee_fraction
+    return net_reward > 0 and net_loss > 0 and net_reward >= net_loss * minimum_ratio
+
+
 @dataclass(frozen=True, slots=True)
 class EntrySetup:
     id: str
@@ -143,11 +174,13 @@ class EntrySetup:
     entry_price: Decimal
     stop_price: Decimal
     target_price: Decimal
-    time_stop_bars: int
+    time_stop_bars: int | None
     stop_level: StructureLevel | None = None
     target_level: StructureLevel | None = None
     expected_entry_price: Decimal | None = None
     minimum_reward_to_risk: Decimal | None = None
+    expected_fee_fraction: Decimal | None = None
+    expected_exit_slippage: Decimal = Decimal(0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +237,7 @@ def evaluate_pullback(
     as_of: datetime,
     expected_entry_slippage: Decimal = Decimal(0),
     minimum_reward_to_risk: Decimal = Decimal(0),
+    expected_fee_fraction: Decimal = Decimal(0),
 ) -> StrategyEvaluation:
     if rules.symbol != symbol:
         raise ValueError("exchange rules must match strategy symbol")
@@ -217,8 +251,12 @@ def evaluate_pullback(
         or not 0 <= expected_entry_slippage <= 1
         or not minimum_reward_to_risk.is_finite()
         or minimum_reward_to_risk < 0
+        or not expected_fee_fraction.is_finite()
+        or not 0 <= expected_fee_fraction <= 1
     ):
-        raise ValueError("slippage and minimum reward-to-risk must be finite and non-negative")
+        raise ValueError(
+            "slippage, fees and minimum reward-to-risk must be finite and non-negative"
+        )
     hourly = tuple(candle for candle in hourly_candles if candle.close_time < as_of)
     entries = tuple(candle for candle in entry_candles if candle.close_time < as_of)
     _validate_candles(hourly, "1h")
@@ -325,13 +363,28 @@ def evaluate_pullback(
                 )
                 reward = candidate - expected_entry if buy else expected_entry - candidate
                 distance = abs(expected_entry - stop)
-                if distance > 0 and reward >= distance * required_ratio:
+                cost_passes = (
+                    configuration.cost_filter == "gross_only"
+                    or net_reward_to_risk_passes(
+                        expected_entry,
+                        stop,
+                        candidate,
+                        buy,
+                        expected_fee_fraction,
+                        expected_entry_slippage,
+                        tick,
+                        required_ratio,
+                    )
+                )
+                if distance > 0 and reward >= distance * required_ratio and cost_passes:
                     target_level, target = level, candidate
                     break
             if target_level is None:
                 return StrategyEvaluation(
                     None,
-                    "no confirmed target level meets slippage-adjusted minimum reward-to-risk",
+                    "no confirmed target level meets cost-adjusted minimum reward-to-risk"
+                    if configuration.cost_filter == "net_reward_risk"
+                    else "no confirmed target level meets slippage-adjusted minimum reward-to-risk",
                 )
         else:
             return _legacy_setup(
@@ -350,7 +403,8 @@ def evaluate_pullback(
     checksum = configuration.checksum
     identity = (
         f"{configuration.implementation}:{checksum}:{symbol}:{direction}:"
-        f"{last.close_time.isoformat()}:{expected_entry}:{required_ratio}:{stop}:{target}"
+        f"{last.close_time.isoformat()}:{expected_entry}:{required_ratio}:{stop}:{target}:"
+        f"{expected_fee_fraction}:{expected_entry_slippage}"
     )
     return StrategyEvaluation(
         EntrySetup(
@@ -366,11 +420,15 @@ def evaluate_pullback(
             entry_price=entry,
             stop_price=stop,
             target_price=target,
-            time_stop_bars=configuration.time_stop_bars,
+            time_stop_bars=configuration.effective_time_stop_bars,
             stop_level=stop_level,
             target_level=target_level,
             expected_entry_price=expected_entry,
             minimum_reward_to_risk=required_ratio,
+            expected_fee_fraction=expected_fee_fraction
+            if configuration.cost_filter == "net_reward_risk"
+            else None,
+            expected_exit_slippage=expected_entry_slippage,
         ),
         "confirmed support/resistance pullback setup",
     )
@@ -436,13 +494,16 @@ def _legacy_setup(
             return StrategyEvaluation(None, "setup prices exceed exchange limits")
 
     checksum = configuration.checksum
-    identity = f"ema-pullback-v1:{checksum}:{symbol}:{direction}:{last.close_time.isoformat()}"
+    identity = (
+        f"{configuration.implementation}:{checksum}:{symbol}:{direction}:"
+        f"{last.close_time.isoformat()}"
+    )
     return StrategyEvaluation(
         setup=EntrySetup(
             id=hashlib.sha256(identity.encode("utf-8")).hexdigest(),
             symbol=symbol,
             direction=direction,
-            strategy_version="ema-pullback-v1",
+            strategy_version=configuration.implementation,
             configuration_checksum=checksum,
             configuration_json=configuration.model_dump_json(),
             signal_time=last.close_time,
@@ -451,7 +512,7 @@ def _legacy_setup(
             entry_price=entry,
             stop_price=stop,
             target_price=target,
-            time_stop_bars=configuration.time_stop_bars,
+            time_stop_bars=configuration.effective_time_stop_bars,
         ),
         reason="trend-aligned closed-candle pullback",
     )

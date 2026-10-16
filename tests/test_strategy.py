@@ -109,7 +109,7 @@ def test_closed_pullback_produces_versioned_tick_aligned_setup(
     assert setup.direction == ("short" if short else "long")
     assert setup.eligible_from == AS_OF
     assert setup.expires_at == AS_OF + timedelta(minutes=45)
-    assert setup.time_stop_bars == 8
+    assert setup.time_stop_bars is None
     assert setup.signal_time < setup.eligible_from
     assert setup.configuration_checksum == config.checksum
     assert StrategyConfiguration.model_validate_json(setup.configuration_json) == config
@@ -239,7 +239,7 @@ def test_structural_prices_use_confirmed_levels_and_slippage_adjusted_ratio(rule
     )
     setup = result.setup
     assert setup is not None
-    assert setup.strategy_version == "ema-pullback-sr-v2"
+    assert setup.strategy_version == "ema-pullback-sr-v3"
     assert setup.stop_level is not None and setup.target_level is not None
     assert setup.stop_level.confirmed_at <= AS_OF
     assert setup.target_level.confirmed_at <= AS_OF
@@ -344,6 +344,59 @@ def test_structural_mode_does_not_require_unused_atr_warmup(rules):
         ).setup
         is not None
     )
+
+
+@pytest.mark.parametrize("short", [False, True])
+def test_net_cost_filter_checks_both_exit_slippage_and_both_fees(short):
+    from futures_bot.strategy.pullback import net_reward_to_risk_passes
+
+    entry = Decimal("100")
+    stop = Decimal("102") if short else Decimal("98")
+    target = Decimal("96") if short else Decimal("104")
+    assert net_reward_to_risk_passes(
+        entry,
+        stop,
+        target,
+        not short,
+        Decimal(0),
+        Decimal(0),
+        Decimal(".1"),
+        Decimal(2),
+    )
+    assert not net_reward_to_risk_passes(
+        entry,
+        stop,
+        target,
+        not short,
+        Decimal(".0005"),
+        Decimal(".0002"),
+        Decimal(".1"),
+        Decimal(2),
+    )
+
+
+def test_cost_filter_can_refuse_gross_qualifying_structure_without_fallback(rules):
+    hourly, entries = histories()
+    gross = evaluate_pullback(
+        "BTCUSDT",
+        hourly,
+        entries,
+        rules,
+        StrategyConfiguration(cost_filter="gross_only"),
+        as_of=AS_OF,
+        expected_fee_fraction=Decimal(".1"),
+    )
+    net = evaluate_pullback(
+        "BTCUSDT",
+        hourly,
+        entries,
+        rules,
+        StrategyConfiguration(cost_filter="net_reward_risk"),
+        as_of=AS_OF,
+        expected_fee_fraction=Decimal(".1"),
+    )
+    assert gross.setup is not None
+    assert net.setup is None and "cost-adjusted" in net.reason
 
 
 def test_nearest_qualifying_target_skips_insufficient_levels(rules):

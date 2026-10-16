@@ -271,7 +271,17 @@ def test_exact_score_ties_are_independent_of_candidate_order(inputs, monkeypatch
 def test_duplicate_candidates_horizon_and_budget_fail_before_running(inputs, runner):
     for updates, message in (
         ({"candidates": (inputs["baseline"],)}, "unique"),
-        ({"candidates": (StrategyConfiguration(time_stop_bars=20),)}, "horizon"),
+        (
+            {
+                "candidates": (
+                    StrategyConfiguration(
+                        time_stop_bars=20,
+                        exit_policy="legacy_time_limit",
+                    ),
+                )
+            },
+            "horizon",
+        ),
         ({"policy": SearchPolicy(maximum_backtests=4)}, "budget"),
         (
             {"candidates": tuple(StrategyConfiguration(time_stop_bars=i) for i in range(1, 17))},

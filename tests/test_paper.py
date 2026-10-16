@@ -145,10 +145,82 @@ def test_old_paper_snapshot_keeps_legacy_protection_but_new_runs_use_structure(f
             "strategy": {
                 key: value
                 for key, value in snapshot["strategy"].items()
-                if key not in ("protection_mode", "level_lookback_bars", "pivot_confirmation_bars")
+                if key
+                not in (
+                    "protection_mode",
+                    "level_lookback_bars",
+                    "pivot_confirmation_bars",
+                    "exit_policy",
+                    "cost_filter",
+                )
             },
         }
         assert PaperConfiguration.model_validate(old).strategy.protection_mode == "legacy_atr"
+        assert PaperConfiguration.model_validate(old).strategy.exit_policy == "legacy_time_limit"
+        prior_structural = {
+            **snapshot,
+            "strategy": {
+                key: value
+                for key, value in snapshot["strategy"].items()
+                if key not in ("exit_policy", "cost_filter")
+            },
+        }
+        previous = PaperConfiguration.model_validate(prior_structural).strategy
+        assert previous.implementation == "ema-pullback-sr-v2"
+        assert previous.effective_time_stop_bars == 8
+        assert previous.cost_filter == "gross_only"
+        current = PaperConfiguration.model_validate(snapshot).strategy
+        assert current.effective_time_stop_bars is None
+        assert current.cost_filter == "gross_only"
+
+
+def test_restart_after_more_than_eight_bars_keeps_protected_position(factory, history, rules):
+    from dataclasses import replace
+
+    from test_backtesting import bar
+
+    run_id = start(factory)
+    hourly, entries = history
+    hourly = (*hourly, *(bar(START + timedelta(hours=i), 60, 433) for i in range(4)))
+    entries = (
+        *entries[:-4],
+        *(
+            replace(bar(START + timedelta(minutes=15 * i), 15, 433), low=Decimal(432))
+            for i in range(13)
+        ),
+    )
+    for index in range(12):
+        current = entries[: 30 + index + 1]
+        with factory() as session:
+            row = process_paper_bar(
+                session,
+                run_id,
+                hourly,
+                current,
+                (),
+                rules,
+                now=current[-1].close_time + timedelta(seconds=1),
+            )
+            session.commit()
+            state = PaperState.model_validate(row.state)
+            assert state.position is not None
+            assert state.position.setup.time_stop_bars is None
+    with factory() as session:
+        assert not session.scalars(select(Trade)).all()
+    stopped = replace(entries[-1], low=Decimal(400), close=Decimal(410))
+    with factory() as session:
+        row = process_paper_bar(
+            session,
+            run_id,
+            hourly,
+            (*entries[:-1], stopped),
+            (),
+            rules,
+            now=stopped.close_time + timedelta(seconds=1),
+        )
+        session.commit()
+        assert PaperState.model_validate(row.state).position is None
+        assert session.scalar(select(Trade)).exit_reason == "stop"
 
 
 def test_pause_blocks_entries_but_existing_protection_remains_managed(factory, history, rules):

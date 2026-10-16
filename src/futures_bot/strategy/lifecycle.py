@@ -76,6 +76,6 @@ def evaluate_exit(
         return ExitResult("stop", price)
     if target_hit:
         return ExitResult("target", setup.target_price)
-    if bars_held >= setup.time_stop_bars:
+    if setup.time_stop_bars is not None and bars_held >= setup.time_stop_bars:
         return ExitResult("time", candle.close)
     return None

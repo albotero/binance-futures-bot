@@ -163,20 +163,68 @@ def test_stop_first_ambiguity_and_adverse_open_gap(history, rules, risk) -> None
 
 
 def test_time_stop_uses_shared_lifecycle(history, rules, risk) -> None:
-    result = simulate(history, rules, risk, strategy=StrategyConfiguration(time_stop_bars=2))
+    result = simulate(
+        history,
+        rules,
+        risk,
+        strategy=StrategyConfiguration(
+            time_stop_bars=2,
+            exit_policy="legacy_time_limit",
+        ),
+    )
     assert result.trades[0].exit_reason == "time"
     assert result.trades[0].exit_time == START + timedelta(minutes=30, milliseconds=-1)
 
 
+def test_no_time_exit_even_with_old_time_stop_parameter(history, rules, risk):
+    from futures_bot.backtesting.engine import _size_entry
+
+    result = simulate(history, rules, risk, strategy=StrategyConfiguration(time_stop_bars=1))
+    assert all(t.exit_reason != "time" for t in result.trades)
+    assert result.trades[0].exit_reason == "end_of_data"
+    setup = evaluate_pullback(
+        "BTCUSDC",
+        *history,
+        rules,
+        StrategyConfiguration(),
+        as_of=START,
+    ).setup
+    assert setup is not None
+    setup = replace(setup, expected_fee_fraction=D(".05"))
+    decision = _size_entry(
+        setup,
+        setup.entry_price,
+        D(10000),
+        D(10000),
+        D(0),
+        START,
+        D(10000),
+        D(10000),
+        rules,
+        risk,
+        1,
+    )
+    assert not decision.accepted
+    assert "cost-adjusted" in str(decision.reasons)
+
+
 def test_future_bars_change_provenance_not_prior_fills(history, rules, risk) -> None:
     hourly, entries = history
-    baseline = simulate(history, rules, risk, strategy=StrategyConfiguration(time_stop_bars=1))
+    baseline = simulate(
+        history,
+        rules,
+        risk,
+        strategy=StrategyConfiguration(
+            time_stop_bars=1,
+            exit_policy="legacy_time_limit",
+        ),
+    )
     future = replace(entries[-1], high=D(999), close=D(998))
     changed = simulate(
         (hourly, (*entries[:-1], future)),
         rules,
         risk,
-        strategy=StrategyConfiguration(time_stop_bars=1),
+        strategy=StrategyConfiguration(time_stop_bars=1, exit_policy="legacy_time_limit"),
     )
     assert baseline.trades[0] == changed.trades[0]
     assert baseline.dataset_checksum != changed.dataset_checksum
@@ -251,7 +299,7 @@ def test_structural_target_passes_2r_after_slippage_but_worse_actual_gap_is_reje
     assert setup is not None
     result = simulate(history, rules, risk, configuration=simulation)
     assert result.trades
-    assert result.configuration_snapshot["strategy_version"] == "ema-pullback-sr-v2"
+    assert result.configuration_snapshot["strategy_version"] == "ema-pullback-sr-v3"
     assert result.trades[0].stop_level is not None
     assert result.trades[0].target_level is not None
     assert result.trades[0].stop_level.confirmed_at <= result.trades[0].entry_time

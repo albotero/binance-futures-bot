@@ -172,7 +172,9 @@ def run_walk_forward_search(
     checksums = [configuration.checksum for configuration in configurations]
     if len(set(checksums)) != len(checksums):
         raise ValueError("search candidates and baseline must be unique")
-    horizon = max(item.entry_expiry_bars + item.time_stop_bars + 1 for item in configurations)
+    horizon = max(
+        item.entry_expiry_bars + (item.effective_time_stop_bars or 0) + 1 for item in configurations
+    )
     if plan.purge_bars < horizon:
         raise ValueError("purge_bars must cover every candidate's entry plus exit horizon")
     budget = len(configurations) * len(plan.folds) * 2 + 2
@@ -273,6 +275,8 @@ def run_walk_forward_search(
                 "The final holdout is excluded from selection within this call only; "
                 "reusing it to revise candidates contaminates that holdout.",
                 "Each fold resets cash and positions; fold returns are not a compounded portfolio.",
+                "Protective-only positions have no finite holding horizon. Each window closes "
+                "remaining positions at its end; purge gaps do not eliminate this boundary bias.",
                 "Prior closed bars can warm indicators, including purge gaps; no gap trades occur.",
                 "All single-symbol simulator limitations apply, including static exchange rules.",
                 "Reports do not promote parameters, modify risk/leverage, or authorize trading.",

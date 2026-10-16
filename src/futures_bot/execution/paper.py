@@ -118,8 +118,13 @@ class PaperConfiguration(BaseModel):
     @field_validator("strategy", mode="before")
     @classmethod
     def preserve_legacy_strategy(cls, value: object) -> object:
-        if isinstance(value, dict) and "protection_mode" not in value:
-            return {**value, "protection_mode": "legacy_atr"}
+        if isinstance(value, dict):
+            return {
+                **value,
+                "protection_mode": value.get("protection_mode", "legacy_atr"),
+                "exit_policy": value.get("exit_policy", "legacy_time_limit"),
+                "cost_filter": value.get("cost_filter", "gross_only"),
+            }
         return value
 
 
@@ -273,6 +278,7 @@ def process_paper_bar(
         as_of=candle.open_time,
         expected_entry_slippage=configuration.simulation.slippage_fraction,
         minimum_reward_to_risk=configuration.risk.policy.minimum_reward_to_risk,
+        expected_fee_fraction=configuration.simulation.fee_fraction,
     )
     _require_history(evaluation.reason)
     # Validate the execution bar as well as preceding strategy inputs.

@@ -324,7 +324,7 @@ before use, or be replaced with a USDC configuration and matching symbols.
 
 ## Strategy baseline
 
-The pure `ema-pullback-sr-v2` strategy uses closed 1-hour EMA50/EMA200 trend
+The pure `ema-pullback-sr-v3` strategy uses closed 1-hour EMA50/EMA200 trend
 alignment and a directional closed 15-minute candle that touches EMA20 and
 closes back on the trend side. A setup triggers one exchange tick beyond the
 signal candle for the next three bars. Stops and targets use confirmed support
@@ -348,11 +348,21 @@ target:
 - If no protective level or qualifying opposing level exists, do not trade.
   There is **no ATR, percentage, or synthetic exact-R fallback**. Ratios concern
   gross entry/stop/target prices, not guaranteed realized PNL after exit
-  slippage, fees, funding, gaps, or time stops.
+  slippage, fees, funding, or gaps.
+- The optional `cost_filter="net_reward_risk"` additionally requires modeled
+  net target profit to cover the modeled stop loss by that same ratio. Per unit,
+  it uses adverse tick-rounded exit fills, subtracts entry plus target-exit fees
+  from reward, and adds entry plus stop-exit fees to risk. It is checked during
+  target selection and again at actual entry. It does not model unknown future
+  funding or gaps. The default remains `gross_only`: a fixed historical
+  comparison did not support enabling this experimental filter.
 
 Lookback and confirmation bars are editable; their defaults cover 24 hours of
 15m bars and 96 hours of hourly bars. Unfilled setups invalidate at the stop or expire after three
-bars; positions have an eight-bar time stop. Bar ambiguity resolves stop-first,
+bars; **positions have no automatic holding-time exit**. With the default
+`exit_policy="protective_only"`, the legacy `time_stop_bars` setting is ignored
+and the setup stores no timer. SL/TP, conservative liquidation and explicit
+paper controls still apply; funding continues while held. Bar ambiguity resolves stop-first,
 and adverse opening gaps are not filled at a fictitious trigger/stop price.
 
 Parameters are typed, serializable, versioned, and editable in the dashboard. Saving
@@ -367,6 +377,10 @@ retain `legacy_atr` (`ema-pullback-v1`) for restart compatibility, including the
 existing positions and pending setups. New configurations default to
 `support_resistance`; the dashboard hides legacy ATR/swing inputs in that mode.
 Existing saved research results are not rewritten.
+Paper snapshots created before v3 retain their original timer and cost policy
+(`legacy_time_limit`, `gross_only`) rather than silently rewriting positions.
+New runs use protective-only defaults even when older saved strategy settings
+contain `time_stop_bars=8`. The dashboard hides legacy timer fields.
 
 ## Offline historical research
 
@@ -384,6 +398,10 @@ snapshot, per-reason flat-position strategy evaluation counts, trade ledger
 profit factor, and expectancy. JSON serialization preserves decimal strings;
 `backtesting.results` provides audited transactional result storage and CSV
 trade export. Results are not automatically promoted into trading settings.
+The historical engine closes any remaining position at the dataset end to
+settle accounting. This is reported as `end_of_data`, not `time`, and is not a
+paper holding-time rule. Short samples can therefore contain boundary-biased
+forced exits; compare longer and disjoint periods before drawing conclusions.
 
 Important limitations: execution timestamps are bar bounds, price slippage
 is adverse, stop/target ambiguity is stop-first, and uncertain intrabar
@@ -400,8 +418,10 @@ orchestration are not implemented yet.
 `backtesting.validation.run_walk_forward_search` evaluates the baseline and
 an explicit, deterministic set of candidate strategy configurations.
 `ValidationPlan` defines ordered training/validation folds and a final
-holdout, with purge gaps covering the longest candidate entry-plus-exit
-horizon. Later candles and funding do not reach earlier backtests.
+holdout, with purge gaps covering pending-entry expiry and any enabled legacy
+timed-exit horizon. Protective-only positions have no finite exit horizon;
+each window closes remaining positions at its boundary, so a finite purge
+gap does not remove that boundary bias. Later candles and funding do not reach earlier backtests.
 Previously closed bars may warm indicators; trading does not occur in purge
 gaps. Each window starts from the same simulated capital with no positions.
 

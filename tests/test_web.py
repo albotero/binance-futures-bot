@@ -135,6 +135,8 @@ def test_uninitialized_strategy_provides_all_editable_defaults(web):
         "reward_multiple": "2",
         "entry_expiry_bars": 3,
         "time_stop_bars": 8,
+        "exit_policy": "protective_only",
+        "cost_filter": "gross_only",
         "protection_mode": "support_resistance",
         "level_lookback_bars": 96,
         "pivot_confirmation_bars": 2,
