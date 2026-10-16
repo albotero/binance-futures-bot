@@ -56,23 +56,14 @@ async def poll_once(factory: sessionmaker[Session]) -> None:
                 client,
                 symbol,
                 "1h",
-                next_open.replace(minute=0) - timedelta(hours=strategy.trend_slow_period + 50),
+                next_open.replace(minute=0) - timedelta(hours=strategy.hourly_history_bars + 50),
                 end - timedelta(milliseconds=1),
             ),
             fetch_historical_klines(
                 client,
                 symbol,
                 "15m",
-                next_open
-                - timedelta(
-                    minutes=15
-                    * (
-                        max(
-                            strategy.pullback_period, strategy.atr_period + 1, strategy.swing_period
-                        )
-                        + 30
-                    )
-                ),
+                next_open - timedelta(minutes=15 * (strategy.entry_history_bars + 30)),
                 end - timedelta(milliseconds=1),
             ),
             client.funding_rate_history(

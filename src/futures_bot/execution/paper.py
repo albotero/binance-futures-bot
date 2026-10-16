@@ -8,7 +8,7 @@ from decimal import Context, Decimal, localcontext
 from typing import Any, Literal
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import JSON, CheckConstraint, Integer, String, UniqueConstraint, select, update
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
@@ -114,6 +114,13 @@ class PaperConfiguration(BaseModel):
     strategy: StrategyConfiguration
     simulation: BacktestConfiguration
     runtime_version: int = Field(ge=1)
+
+    @field_validator("strategy", mode="before")
+    @classmethod
+    def preserve_legacy_strategy(cls, value: object) -> object:
+        if isinstance(value, dict) and "protection_mode" not in value:
+            return {**value, "protection_mode": "legacy_atr"}
+        return value
 
 
 def create_paper_run(
@@ -258,7 +265,14 @@ def process_paper_bar(
         fault_paper_run(session, run_id, "exchange contract denomination mismatch")
         return row
     evaluation = evaluate_pullback(
-        row.symbol, hourly, entries, rules, configuration.strategy, as_of=candle.open_time
+        row.symbol,
+        hourly,
+        entries,
+        rules,
+        configuration.strategy,
+        as_of=candle.open_time,
+        expected_entry_slippage=configuration.simulation.slippage_fraction,
+        minimum_reward_to_risk=configuration.risk.policy.minimum_reward_to_risk,
     )
     _require_history(evaluation.reason)
     # Validate the execution bar as well as preceding strategy inputs.
@@ -270,7 +284,11 @@ def process_paper_bar(
         realized = state.realized_pnl
         position = state.position
         pending = state.pending
-        details: dict[str, Any] = {"simulated": True, "entries_enabled": row.status == "running"}
+        details: dict[str, Any] = {
+            "simulated": True,
+            "entries_enabled": row.status == "running",
+            "strategy_reason": evaluation.reason,
+        }
         day = (
             candle.open_time.astimezone(ZoneInfo(configuration.simulation.reporting_timezone))
             .date()

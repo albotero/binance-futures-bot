@@ -76,6 +76,14 @@ def risk() -> RiskConfiguration:
 def history() -> tuple[tuple[Kline, ...], tuple[Kline, ...]]:
     hourly = tuple(bar(START - timedelta(hours=220 - i), 60, 200 + i) for i in range(220))
     warmup = tuple(bar(START - timedelta(minutes=15 * (30 - i)), 15, 400 + i) for i in range(30))
+    warmup = tuple(
+        replace(candle, high=D("550"))
+        if i == 5
+        else replace(candle, low=D("414"))
+        if i == 26
+        else candle
+        for i, candle in enumerate(warmup)
+    )
     warmup = (*warmup[:-1], replace(warmup[-1], low=D(415)))
     execution = tuple(
         replace(bar(START + timedelta(minutes=15 * i), 15, 433), low=D(432), open=D(433))
@@ -223,6 +231,50 @@ def test_risk_rejections_are_exposed_and_do_not_create_trades(history, rules, ri
     assert not result.trades
     assert result.risk_rejections
     assert result.net_pnl == 0
+
+
+def test_structural_target_passes_2r_after_slippage_but_worse_actual_gap_is_rejected(
+    history, rules, risk
+):
+    simulation = BacktestConfiguration(starting_balance="10000", slippage_fraction="0.0002")
+    from futures_bot.backtesting.engine import _size_entry
+
+    setup = evaluate_pullback(
+        "BTCUSDC",
+        *history,
+        rules,
+        StrategyConfiguration(),
+        as_of=START,
+        expected_entry_slippage=simulation.slippage_fraction,
+        minimum_reward_to_risk=D("2"),
+    ).setup
+    assert setup is not None
+    result = simulate(history, rules, risk, configuration=simulation)
+    assert result.trades
+    assert result.configuration_snapshot["strategy_version"] == "ema-pullback-sr-v2"
+    assert result.trades[0].stop_level is not None
+    assert result.trades[0].target_level is not None
+    assert result.trades[0].stop_level.confirmed_at <= result.trades[0].entry_time
+    assert result.trades[0].target_level.confirmed_at <= result.trades[0].entry_time
+    actual_gap = (setup.target_price + setup.stop_price) / 2
+    decision = _size_entry(
+        setup,
+        actual_gap,
+        D("10000"),
+        D("10000"),
+        D(0),
+        START,
+        D("10000"),
+        D("10000"),
+        rules,
+        RiskConfiguration(
+            policy=replace(risk.policy, maximum_stop_distance_fraction=D("1")),
+            symbols=risk.symbols,
+        ),
+        1,
+    )
+    assert not decision.accepted
+    assert "actual fill fails" in str(decision.reasons)
 
 
 def test_simulation_supports_50x_without_enlarging_position_risk(history, rules, risk):

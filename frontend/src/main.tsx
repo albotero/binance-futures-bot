@@ -14,7 +14,7 @@ type Config<T> = { version: number; configuration: T | null; defaults: T | null 
 type Auth = { authenticated: boolean; username: string | null; csrf_token: string; expires_at: string };
 type Audit = { id: string; actor: string; action: string; created_at: string; details: unknown };
 type Run = { id: string; status: string; created_at: string; dataset_metadata: Record<string, unknown> };
-type Detail = { id: string; metrics: unknown; configuration_snapshot: unknown; dataset_metadata: Record<string, unknown> };
+type Detail = { id: string; metrics: { strategy_observations?: Record<string, number>; trades?: unknown[]; risk_rejections?: unknown[] }; configuration_snapshot: unknown; dataset_metadata: Record<string, unknown> };
 type PaperRun = { id: string; version: number; status: string; symbol: string; state: Record<string, unknown>; configuration: unknown; updated_at: string };
 type PaperCapabilities = { available: boolean; note: string; simulation_defaults: Record<string, string> };
 
@@ -102,7 +102,7 @@ function App() {
     if (r.version !== s.version) throw new Error("Settings changed while loading. Reload settings.");
     setVersion(r.version);
     setRisk(r.configuration ?? structuredClone(suggestedRisk));
-    setStrategy(s.configuration ?? s.defaults ?? {});
+    setStrategy({ ...s.defaults, ...s.configuration });
     setInitialized({ risk: r.configuration !== null, strategy: s.configuration !== null });
     try {
       const leverage = await api<{ items: LeverageSchedule[] }>("/api/market/leverage");
@@ -260,10 +260,17 @@ function App() {
             </fieldset></form>
           </section>
           <section><h2>Strategy parameters</h2><p>{!settingsLoaded ? "Loading strategy settings and implementation defaults…" : initialized.strategy ? "Saved configuration" : "Not initialized. Implementation defaults shown; save explicitly to initialize."}</p>
+            <p>New research and paper runs use confirmed 15-minute and hourly swing support/resistance by default. Stops sit one tick beyond the nearest protective level; targets sit one tick before a qualifying opposing level. The minimum ratio is the larger of the strategy target ratio and the risk minimum, after expected entry slippage. No suitable levels means no trade. Previously created paper runs keep their original snapshots.</p>
             <form onSubmit={event => save(event, "strategy")}><fieldset disabled={busy || !settingsLoaded || Object.keys(strategy).length === 0}>
-              {Object.entries(strategy).map(([key, value]) => <label key={key}>{label(key)}<input required
+              {Object.entries(strategy).filter(([key]) => strategy.protection_mode === "legacy_atr" || !["atr_period", "atr_multiplier", "swing_period"].includes(key)).map(([key, value]) => <label key={key}>{key === "reward_multiple" ? "Minimum target reward / risk" : label(key)}{key === "protection_mode" ? <select value={value} onChange={e => setStrategy({ ...strategy, [key]: e.target.value })}>
+                <option value="support_resistance">Confirmed support / resistance</option>
+                <option value="legacy_atr">Legacy ATR / exact-R (compatibility only)</option>
+              </select> : <input required
                 type={typeof value === "number" ? "number" : "text"} step="1" value={value}
-                onChange={e => setStrategy({ ...strategy, [key]: typeof value === "number" ? Number(e.target.value) : e.target.value })} /></label>)}
+                onChange={e => setStrategy({ ...strategy, [key]: typeof value === "number" ? Number(e.target.value) : e.target.value })} />}
+                {key === "level_lookback_bars" && <small>Closed bars searched independently on each timeframe; 96 means 24 hours of 15m levels and 96 hours of 1h levels. Broken levels are excluded.</small>}
+                {key === "pivot_confirmation_bars" && <small>Closed candles required on each side of a strict swing high/low. A level cannot be used before its right-hand candles close.</small>}
+              </label>)}
               <button type="submit">Save strategy settings</button>
             </fieldset></form>
             <p>Saving parameters does not place orders or enable live trading. Research results never automatically promote settings.</p>
@@ -307,7 +314,12 @@ function App() {
             {run.dataset_metadata.kind === "walk_forward_search" && <a href={`/api/research/${encodeURIComponent(run.id)}/validation.json`}>Validation JSON</a>}
           </td></tr>)}
         </tbody></table></div>}
-        {detail && <article><h3>Run {detail.id}</h3><button onClick={() => setDetail(null)}>Close result</button><pre>{JSON.stringify(detail, null, 2)}</pre></article>}
+        {detail && <article><h3>Run {detail.id}</h3><button onClick={() => setDetail(null)}>Close result</button>
+          {detail.metrics.trades && <p>{detail.metrics.trades.length} completed trades · {detail.metrics.risk_rejections?.length ?? 0} rejected entry attempts. A completed run may legitimately have no trades.</p>}
+          {detail.metrics.strategy_observations && <><h4>Strategy evaluation reasons</h4><p>Counts are evaluated flat-position bars, not unique trades or all candles. Pending setups may span several bars.</p><ul>
+            {Object.entries(detail.metrics.strategy_observations).map(([reason, count]) => <li key={reason}>{reason}: {count}</li>)}
+          </ul></>}
+          <pre>{JSON.stringify(detail, null, 2)}</pre></article>}
       </section>}
       {(tab === "audit" || tab === "research") && <div className="toolbar">
         <button disabled={busy || offset === 0} onClick={() => setOffset(Math.max(0, offset - 100))}>Previous</button>

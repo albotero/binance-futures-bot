@@ -324,12 +324,34 @@ before use, or be replaced with a USDC configuration and matching symbols.
 
 ## Strategy baseline
 
-The pure `ema-pullback-v1` strategy uses closed 1-hour EMA50/EMA200 trend
+The pure `ema-pullback-sr-v2` strategy uses closed 1-hour EMA50/EMA200 trend
 alignment and a directional closed 15-minute candle that touches EMA20 and
 closes back on the trend side. A setup triggers one exchange tick beyond the
-signal candle for the next three bars. Its stop uses the wider of the five-bar
-swing plus one tick or 1.5 times Wilder ATR14; the target is at least 2R after
-tick rounding. Unfilled setups invalidate at the stop or expire after three
+signal candle for the next three bars. Stops and targets use confirmed support
+and resistance, not fixed percentages, ATR distances, or an arbitrary exact-R
+target:
+
+- Inspect the last 96 closed bars **per timeframe** (15m and 1h by default).
+  A strict swing high/low must exceed/fall below two closed neighbors on each
+  side; it is unavailable until the two right-hand bars close. Equal-price
+  plateaus do not count. A subsequent close through a level invalidates it;
+  a wick through it alone does not.
+- Choose the nearest support below the long signal candle's low, or resistance
+  above the short signal candle's high. Place the stop one exchange tick beyond
+  that level, rounded away from entry.
+- Calculate the adverse-slippage, tick-rounded expected entry, then choose the
+  nearest opposing level that meets `max(strategy.reward_multiple,
+  risk.minimum_reward_to_risk)`, normally at least 2R. Place the target one tick
+  before that level. Nearer insufficient levels may be skipped. The final
+  actual fill must still meet both minimum ratios; a worse opening gap can
+  therefore reject the trade without moving its stop or target.
+- If no protective level or qualifying opposing level exists, do not trade.
+  There is **no ATR, percentage, or synthetic exact-R fallback**. Ratios concern
+  gross entry/stop/target prices, not guaranteed realized PNL after exit
+  slippage, fees, funding, gaps, or time stops.
+
+Lookback and confirmation bars are editable; their defaults cover 24 hours of
+15m bars and 96 hours of hourly bars. Unfilled setups invalidate at the stop or expire after three
 bars; positions have an eight-bar time stop. Bar ambiguity resolves stop-first,
 and adverse opening gaps are not filled at a fictitious trigger/stop price.
 
@@ -339,7 +361,12 @@ retaining immutable parameter snapshots. Each generated setup carries its
 implementation version and configuration checksum. Incomplete candles cannot
 produce setups, indicator warm-up is required, and missing historical bars
 raise explicit errors. This is a research baseline, not evidence of a trading
-edge, and is not yet connected to an automated execution loop.
+edge. Historical research and new paper runs share these rules; there is no
+live-order transport. Old paper snapshots lacking `protection_mode` explicitly
+retain `legacy_atr` (`ema-pullback-v1`) for restart compatibility, including their
+existing positions and pending setups. New configurations default to
+`support_resistance`; the dashboard hides legacy ATR/swing inputs in that mode.
+Existing saved research results are not rewritten.
 
 ## Offline historical research
 
@@ -352,7 +379,8 @@ The function makes no network requests. Missing or inconsistent histories
 raise errors; denied entries include risk rejection reasons.
 
 Results include a dataset checksum, engine/strategy versions, configuration
-snapshot, trade ledger, equity curve, net fees/funding, drawdown, win rate,
+snapshot, per-reason flat-position strategy evaluation counts, trade ledger
+(including structural level provenance and stop/target prices), equity curve, net fees/funding, drawdown, win rate,
 profit factor, and expectancy. JSON serialization preserves decimal strings;
 `backtesting.results` provides audited transactional result storage and CSV
 trade export. Results are not automatically promoted into trading settings.

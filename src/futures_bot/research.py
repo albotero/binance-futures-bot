@@ -82,7 +82,7 @@ async def execute_research(
                 request.symbol,
                 "1h",
                 request.start.replace(minute=0)
-                - timedelta(hours=parameters.trend_slow_period + 50),
+                - timedelta(hours=parameters.hourly_history_bars + 50),
                 request.end - timedelta(milliseconds=1),
                 max_pages=10,
             ),
@@ -90,18 +90,7 @@ async def execute_research(
                 client,
                 request.symbol,
                 "15m",
-                request.start
-                - timedelta(
-                    minutes=15
-                    * (
-                        max(
-                            parameters.pullback_period,
-                            parameters.atr_period + 1,
-                            parameters.swing_period,
-                        )
-                        + 50
-                    )
-                ),
+                request.start - timedelta(minutes=15 * (parameters.entry_history_bars + 50)),
                 request.end - timedelta(milliseconds=1),
                 max_pages=10,
             ),

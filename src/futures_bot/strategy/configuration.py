@@ -12,7 +12,7 @@ from futures_bot.persistence.repositories import (
     create_strategy_configuration,
     save_application_configuration,
 )
-from futures_bot.strategy.pullback import STRATEGY_VERSION, StrategyConfiguration
+from futures_bot.strategy.pullback import StrategyConfiguration
 
 
 class MissingStrategyConfiguration(RuntimeError):
@@ -68,7 +68,7 @@ def save_strategy_configuration(
             session,
             configuration.checksum,
             {
-                "implementation": STRATEGY_VERSION,
+                "implementation": configuration.implementation,
                 "parameters": configuration.model_dump(mode="json"),
             },
             actor,

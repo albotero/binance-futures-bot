@@ -9,6 +9,7 @@ from test_backtesting import START
 from futures_bot.backtesting import BacktestConfiguration
 from futures_bot.exchange.leverage import LeverageBracket, LeverageSchedule
 from futures_bot.execution.paper import (
+    PaperConfiguration,
     PaperEvent,
     PaperRun,
     PaperState,
@@ -128,6 +129,26 @@ def test_paper_125x_entry_respects_verified_bracket_snapshot(factory, history, r
     assert (
         row.configuration["risk"]["symbols"][0]["leverage_schedule"]["environment"] == "production"
     )
+
+
+def test_old_paper_snapshot_keeps_legacy_protection_but_new_runs_use_structure(factory):
+    run_id = start(factory)
+    with factory() as session:
+        row = session.get(PaperRun, run_id)
+        snapshot = row.configuration
+        assert (
+            PaperConfiguration.model_validate(snapshot).strategy.protection_mode
+            == "support_resistance"
+        )
+        old = {
+            **snapshot,
+            "strategy": {
+                key: value
+                for key, value in snapshot["strategy"].items()
+                if key not in ("protection_mode", "level_lookback_bars", "pivot_confirmation_bars")
+            },
+        }
+        assert PaperConfiguration.model_validate(old).strategy.protection_mode == "legacy_atr"
 
 
 def test_pause_blocks_entries_but_existing_protection_remains_managed(factory, history, rules):

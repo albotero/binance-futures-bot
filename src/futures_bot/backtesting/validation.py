@@ -24,7 +24,6 @@ from futures_bot.backtesting.engine import (
 from futures_bot.exchange import FundingRate, Kline, SymbolRules
 from futures_bot.risk.configuration import RiskConfiguration
 from futures_bot.strategy import StrategyConfiguration
-from futures_bot.strategy.pullback import STRATEGY_VERSION
 
 VALIDATION_VERSION = "purged-walk-forward-v1"
 _BAR = timedelta(minutes=15)
@@ -247,7 +246,7 @@ def run_walk_forward_search(
             configuration_snapshot={
                 "validation_version": VALIDATION_VERSION,
                 "engine_version": BACKTEST_VERSION,
-                "strategy_version": STRATEGY_VERSION,
+                "strategy_version": baseline.implementation,
                 "risk": risk.model_dump(mode="json"),
                 "simulation": simulation.model_dump(mode="json"),
                 "strategies": [item.model_dump(mode="json") for item in configurations],

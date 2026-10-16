@@ -7,7 +7,12 @@ from pydantic import ValidationError
 
 from futures_bot.exchange import Kline, SymbolRules
 from futures_bot.strategy import StrategyConfiguration, evaluate_pullback
-from futures_bot.strategy.pullback import average_true_range, exponential_moving_average
+from futures_bot.strategy.pullback import (
+    adverse_fill_price,
+    average_true_range,
+    confirmed_levels,
+    exponential_moving_average,
+)
 
 AS_OF = datetime(2026, 10, 16, 12, tzinfo=UTC)
 
@@ -54,6 +59,14 @@ def histories(short: bool = False) -> tuple[tuple[Kline, ...], tuple[Kline, ...]
     )
     entries = tuple(
         bar(AS_OF - timedelta(minutes=15 * (30 - index)), 15, 400 + index) for index in range(30)
+    )
+    entries = tuple(
+        replace(candle, high=Decimal("550"))
+        if i == 5
+        else replace(candle, low=Decimal("414"))
+        if i == 26
+        else candle
+        for i, candle in enumerate(entries)
     )
     last = replace(entries[-1], low=Decimal("415"))
     entries = (*entries[:-1], last)
@@ -209,6 +222,180 @@ def test_configuration_changes_have_distinct_setup_identity(rules: SymbolRules) 
     assert first.setup is not None and second.setup is not None
     assert first.setup.id != second.setup.id
     assert first.setup.configuration_checksum != second.setup.configuration_checksum
+
+
+@pytest.mark.parametrize("short", [False, True])
+def test_structural_prices_use_confirmed_levels_and_slippage_adjusted_ratio(rules, short):
+    hourly, entries = histories(short)
+    result = evaluate_pullback(
+        "BTCUSDT",
+        hourly,
+        entries,
+        rules,
+        StrategyConfiguration(),
+        as_of=AS_OF,
+        expected_entry_slippage=Decimal("0.0002"),
+        minimum_reward_to_risk=Decimal("3"),
+    )
+    setup = result.setup
+    assert setup is not None
+    assert setup.strategy_version == "ema-pullback-sr-v2"
+    assert setup.stop_level is not None and setup.target_level is not None
+    assert setup.stop_level.confirmed_at <= AS_OF
+    assert setup.target_level.confirmed_at <= AS_OF
+    assert setup.stop_price == setup.stop_level.price + (
+        rules.price_tick if short else -rules.price_tick
+    )
+    assert setup.target_price == setup.target_level.price + (
+        rules.price_tick if short else -rules.price_tick
+    )
+    expected = adverse_fill_price(setup.entry_price, not short, Decimal("0.0002"), rules.price_tick)
+    assert setup.expected_entry_price == expected
+    assert abs(setup.target_price - expected) >= abs(expected - setup.stop_price) * 3
+    assert setup.minimum_reward_to_risk == 3
+
+
+def test_no_structural_levels_means_no_atr_or_exact_ratio_fallback(rules):
+    hourly, entries = histories()
+    without = tuple(
+        replace(candle, high=candle.close + 2, low=candle.close - 2) for candle in entries
+    )
+    without = (*without[:-1], replace(without[-1], low=Decimal("415")))
+    result = evaluate_pullback(
+        "BTCUSDT",
+        hourly,
+        without,
+        rules,
+        StrategyConfiguration(),
+        as_of=AS_OF,
+    )
+    assert result.setup is None
+    assert result.reason == "no confirmed protective support/resistance level"
+    without_target = tuple(replace(candle, high=candle.close + 2) for candle in entries)
+    result = evaluate_pullback(
+        "BTCUSDT",
+        hourly,
+        without_target,
+        rules,
+        StrategyConfiguration(),
+        as_of=AS_OF,
+    )
+    assert result.setup is None
+    assert "no confirmed target level" in result.reason
+
+
+def test_hourly_target_can_qualify_when_15m_has_no_target(rules):
+    hourly, entries = histories()
+    entries = tuple(replace(c, high=c.close + 2) for c in entries)
+    hourly = tuple(replace(c, high=Decimal("560")) if i == 180 else c for i, c in enumerate(hourly))
+    setup = evaluate_pullback(
+        "BTCUSDT",
+        hourly,
+        entries,
+        rules,
+        StrategyConfiguration(),
+        as_of=AS_OF,
+    ).setup
+    assert setup is not None
+    assert setup.stop_level.timeframe == "15m"
+    assert setup.target_level.timeframe == "1h"
+    assert setup.target_price == Decimal("559.9")
+
+
+def test_target_that_only_meets_ratio_before_slippage_is_not_used(rules):
+    hourly, entries = histories()
+    entries = tuple(
+        replace(c, high=Decimal("465.7")) if i == 5 else c for i, c in enumerate(entries)
+    )
+    before = evaluate_pullback(
+        "BTCUSDT",
+        hourly,
+        entries,
+        rules,
+        StrategyConfiguration(),
+        as_of=AS_OF,
+    )
+    assert before.setup is not None
+    after = evaluate_pullback(
+        "BTCUSDT",
+        hourly,
+        entries,
+        rules,
+        StrategyConfiguration(),
+        as_of=AS_OF,
+        expected_entry_slippage=Decimal("0.0001"),
+    )
+    assert after.setup is None
+    assert "slippage-adjusted" in after.reason
+
+
+def test_structural_mode_does_not_require_unused_atr_warmup(rules):
+    hourly, entries = histories()
+    configuration = StrategyConfiguration(atr_period=500, swing_period=100)
+    assert configuration.entry_history_bars == 96
+    assert (
+        evaluate_pullback(
+            "BTCUSDT",
+            hourly,
+            entries,
+            rules,
+            configuration,
+            as_of=AS_OF,
+        ).setup
+        is not None
+    )
+
+
+def test_nearest_qualifying_target_skips_insufficient_levels(rules):
+    hourly, entries = histories()
+    entries = tuple(
+        replace(c, high=Decimal("450"))
+        if i == 12
+        else replace(c, high=Decimal("500"))
+        if i == 18
+        else c
+        for i, c in enumerate(entries)
+    )
+    setup = evaluate_pullback(
+        "BTCUSDT",
+        hourly,
+        entries,
+        rules,
+        StrategyConfiguration(),
+        as_of=AS_OF,
+        minimum_reward_to_risk=Decimal("2"),
+    ).setup
+    assert setup is not None
+    assert setup.target_level.price == 500
+    assert setup.target_price == Decimal("499.9")
+    assert setup.stop_level.price == 414
+    result = evaluate_pullback(
+        "BTCUSDT",
+        hourly,
+        entries,
+        rules,
+        StrategyConfiguration(),
+        as_of=AS_OF,
+        minimum_reward_to_risk=Decimal("100"),
+    )
+    assert result.setup is None and "minimum reward-to-risk" in result.reason
+
+
+def test_pivots_require_closed_right_confirmation_and_broken_levels_are_excluded():
+    candles = tuple(bar(AS_OF + timedelta(minutes=15 * i), 15, 100) for i in range(7))
+    candles = tuple(
+        replace(c, high=Decimal("120"), low=Decimal("80")) if i == 2 else c
+        for i, c in enumerate(candles)
+    )
+    assert not confirmed_levels(candles[:4], "15m", 96, 2)
+    levels = confirmed_levels(candles[:5], "15m", 96, 2)
+    assert {level.kind for level in levels} == {"support", "resistance"}
+    assert all(
+        level.confirmed_at == candles[4].close_time + timedelta(milliseconds=1) for level in levels
+    )
+    broken = (*candles[:5], replace(candles[5], close=Decimal("121"), high=Decimal("122")))
+    assert all(level.kind != "resistance" for level in confirmed_levels(broken, "15m", 96, 2))
+    assert not confirmed_levels(candles, "15m", 4, 2)
 
 
 def test_unicode_symbol_has_a_stable_strategy_identity(rules: SymbolRules) -> None:

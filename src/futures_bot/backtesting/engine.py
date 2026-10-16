@@ -5,7 +5,7 @@ import json
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
-from decimal import ROUND_CEILING, ROUND_FLOOR, Context, Decimal, localcontext
+from decimal import Context, Decimal, localcontext
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -17,10 +17,10 @@ from futures_bot.risk.configuration import RiskConfiguration
 from futures_bot.risk.engine import UNVERIFIED_SIMULATION_MAX_LEVERAGE
 from futures_bot.strategy import EntrySetup, StrategyConfiguration, evaluate_pullback
 from futures_bot.strategy.lifecycle import evaluate_entry, evaluate_exit
-from futures_bot.strategy.pullback import STRATEGY_VERSION, _validate_candles
+from futures_bot.strategy.pullback import StructureLevel, _validate_candles, adverse_fill_price
 
 ZERO = Decimal(0)
-BACKTEST_VERSION = "single-symbol-bars-v1"
+BACKTEST_VERSION = "single-symbol-bars-v2"
 
 
 class BacktestConfiguration(BaseModel):
@@ -74,6 +74,10 @@ class SimulatedTrade(BaseModel):
     funding_pnl: Decimal
     net_pnl: Decimal
     exit_reason: str
+    stop_price: Decimal | None = None
+    target_price: Decimal | None = None
+    stop_level: StructureLevel | None = None
+    target_level: StructureLevel | None = None
 
 
 class EquityPoint(BaseModel):
@@ -96,6 +100,7 @@ class BacktestResult(BaseModel):
     trades: tuple[SimulatedTrade, ...]
     equity_curve: tuple[EquityPoint, ...]
     risk_rejections: tuple[tuple[datetime, tuple[str, ...]], ...]
+    strategy_observations: dict[str, int] = Field(default_factory=dict)
     starting_balance: Decimal
     final_equity: Decimal
     net_pnl: Decimal
@@ -181,7 +186,16 @@ def _run_backtest(
     if not bars or bars[0].open_time != start or bars[-1].open_time + timedelta(minutes=15) != end:
         raise ValueError("backtest requires complete 15-minute coverage of the requested range")
     # Evaluate at the first boundary to require sufficient, gap-free warm-up.
-    initial = evaluate_pullback(symbol, hourly, entries, rules, strategy, as_of=start)
+    initial = evaluate_pullback(
+        symbol,
+        hourly,
+        entries,
+        rules,
+        strategy,
+        as_of=start,
+        expected_entry_slippage=configuration.slippage_fraction,
+        minimum_reward_to_risk=risk.policy.minimum_reward_to_risk,
+    )
     _require_history(initial.reason)
     rates = _validate_funding(funding_rates, symbol, start, end)
     cash = configuration.starting_balance
@@ -193,6 +207,7 @@ def _run_backtest(
     trades: list[SimulatedTrade] = []
     equity_curve = [EquityPoint(time=start, equity=cash, drawdown_fraction=ZERO)]
     rejections: list[tuple[datetime, tuple[str, ...]]] = []
+    observations: dict[str, int] = {}
     pending: EntrySetup | None = initial.setup
     funding_index = 0
     halted = False
@@ -222,7 +237,17 @@ def _run_backtest(
             halted = True
             break
         if not occupied_at_open:
-            evaluation = evaluate_pullback(symbol, hourly, entries, rules, strategy, as_of=time)
+            evaluation = evaluate_pullback(
+                symbol,
+                hourly,
+                entries,
+                rules,
+                strategy,
+                as_of=time,
+                expected_entry_slippage=configuration.slippage_fraction,
+                minimum_reward_to_risk=risk.policy.minimum_reward_to_risk,
+            )
+            observations[evaluation.reason] = observations.get(evaluation.reason, 0) + 1
             _require_history(evaluation.reason)
             if pending is None:
                 pending = evaluation.setup
@@ -344,6 +369,10 @@ def _run_backtest(
                         funding_pnl=open_position.funding_pnl,
                         net_pnl=gross - fees + open_position.funding_pnl,
                         exit_reason=reason,
+                        stop_price=open_position.setup.stop_price,
+                        target_price=open_position.setup.target_price,
+                        stop_level=open_position.setup.stop_level,
+                        target_level=open_position.setup.target_level,
                     )
                 )
                 open_position = None
@@ -372,7 +401,7 @@ def _run_backtest(
         dataset_checksum=_dataset_checksum(hourly, entries, rates),
         configuration_snapshot={
             "engine_version": BACKTEST_VERSION,
-            "strategy_version": STRATEGY_VERSION,
+            "strategy_version": strategy.implementation,
             "strategy": strategy.model_dump(mode="json"),
             "risk": risk.model_dump(mode="json"),
             "simulation": configuration.model_dump(mode="json"),
@@ -381,6 +410,7 @@ def _run_backtest(
         trades=tuple(trades),
         equity_curve=tuple(equity_curve),
         risk_rejections=tuple(rejections),
+        strategy_observations=observations,
         starting_balance=configuration.starting_balance,
         final_equity=cash,
         net_pnl=net,
@@ -455,7 +485,19 @@ def _size_entry(
         market_time=time,
         exchange_notional_cap=schedule.notional_limit(leverage) if schedule is not None else None,
     )
-    return size_position(request, account, portfolio, risk.policy, now=time)
+    decision = size_position(request, account, portfolio, risk.policy, now=time)
+    if decision.accepted and setup.minimum_reward_to_risk is not None:
+        reward = (
+            setup.target_price - price if setup.direction == "long" else price - setup.target_price
+        )
+        if reward < abs(price - setup.stop_price) * setup.minimum_reward_to_risk:
+            return RiskDecision(
+                accepted=False,
+                reasons=("actual fill fails the setup minimum reward-to-risk",),
+                risk_budget=decision.risk_budget,
+                stop_distance=decision.stop_distance,
+            )
+    return decision
 
 
 def _require_history(reason: str) -> None:
@@ -478,10 +520,7 @@ def _funding_payment(position: _OpenPosition, funding: FundingRate) -> Decimal:
 
 
 def _slipped_price(price: Decimal, buy: bool, fraction: Decimal, tick: Decimal) -> Decimal:
-    adjusted = price * (1 + fraction if buy else 1 - fraction)
-    return (adjusted / tick).to_integral_value(
-        rounding=ROUND_CEILING if buy else ROUND_FLOOR
-    ) * tick
+    return adverse_fill_price(price, buy, fraction, tick)
 
 
 def _validate_range(start: datetime, end: datetime) -> None:
