@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 
@@ -102,6 +103,24 @@ def test_restart_and_repeated_bar_preserve_exactly_one_entry(factory, history, r
     assert PaperState.model_validate(second.state).position.bars_held == 2
 
 
+def test_new_paper_volume_filter_refuses_low_volume_without_moving_protection(
+    factory, history, rules
+):
+    run_id = start(factory)
+    hourly, entries = history
+    # Signal immediately precedes the first execution bar; volume is below its prior20 mean.
+    entries = (*entries[:29], replace(entries[29], volume=Decimal("0.99")), *entries[30:])
+    row = process(factory, run_id, (hourly, entries), rules)
+    assert PaperConfiguration.model_validate(row.configuration).strategy.volume_filter == (
+        "signal_above_prior_mean"
+    )
+    assert PaperState.model_validate(row.state).position is None
+    with factory() as session:
+        assert session.scalar(select(OrderRecord)) is None
+        event = session.scalar(select(PaperEvent))
+        assert event.details["strategy_reason"] == "signal volume below prior 20-bar mean"
+
+
 def test_paper_125x_entry_respects_verified_bracket_snapshot(factory, history, rules, risk):
     schedule = LeverageSchedule(
         symbol="BTCUSDC",
@@ -152,6 +171,7 @@ def test_old_paper_snapshot_keeps_legacy_protection_but_new_runs_use_structure(f
                     "pivot_confirmation_bars",
                     "exit_policy",
                     "cost_filter",
+                    "volume_filter",
                 )
             },
         }
@@ -162,14 +182,16 @@ def test_old_paper_snapshot_keeps_legacy_protection_but_new_runs_use_structure(f
             "strategy": {
                 key: value
                 for key, value in snapshot["strategy"].items()
-                if key not in ("exit_policy", "cost_filter")
+                if key not in ("exit_policy", "cost_filter", "volume_filter")
             },
         }
         previous = PaperConfiguration.model_validate(prior_structural).strategy
+        assert previous.volume_filter == "disabled"
         assert previous.implementation == "ema-pullback-sr-v2"
         assert previous.effective_time_stop_bars == 8
         assert previous.cost_filter == "gross_only"
         current = PaperConfiguration.model_validate(snapshot).strategy
+        assert current.volume_filter == "signal_above_prior_mean"
         assert current.effective_time_stop_bars is None
         assert current.cost_filter == "gross_only"
         assert (

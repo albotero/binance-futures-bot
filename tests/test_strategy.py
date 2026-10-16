@@ -5,9 +5,11 @@ from decimal import Decimal
 import pytest
 from pydantic import ValidationError
 
+from futures_bot.data.candles import next_candle_open
 from futures_bot.exchange import Kline, SymbolRules
 from futures_bot.strategy import StrategyConfiguration, evaluate_pullback
 from futures_bot.strategy.pullback import (
+    TIMEFRAME_PAIRS,
     adverse_fill_price,
     average_true_range,
     confirmed_levels,
@@ -128,6 +130,128 @@ def test_closed_pullback_produces_versioned_tick_aligned_setup(
         assert setup.stop_price < min(candle.low for candle in entries[-5:])
 
 
+@pytest.mark.parametrize("short", [False, True])
+def test_volume_confirmation_exact_boundary_excludes_signal_and_future(rules, short):
+    hourly, entries = histories(short)
+    # The last prior bar differs to distinguish the mean from a median or last-volume test.
+    entries = (*entries[:-2], replace(entries[-2], volume=Decimal("21")), entries[-1])
+    config = StrategyConfiguration()
+    at_mean = (*entries[:-1], replace(entries[-1], volume=Decimal("2")))
+    accepted = evaluate_pullback("BTCUSDT", hourly, at_mean, rules, config, as_of=AS_OF)
+    assert accepted.setup is not None
+    below = (*entries[:-1], replace(entries[-1], volume=Decimal("1.99")))
+    denied = evaluate_pullback("BTCUSDT", hourly, below, rules, config, as_of=AS_OF)
+    assert denied.setup is None and denied.reason == "signal volume below prior 20-bar mean"
+    assert (
+        evaluate_pullback(
+            "BTCUSDT",
+            hourly,
+            below,
+            rules,
+            config.model_copy(update={"volume_filter": "disabled"}),
+            as_of=AS_OF,
+        ).setup
+        is not None
+    )
+    future = replace(bar(AS_OF, 15, 1), volume=Decimal("1000000"))
+    assert (
+        evaluate_pullback(
+            "BTCUSDT",
+            hourly,
+            (*at_mean, future),
+            rules,
+            config,
+            as_of=AS_OF,
+        )
+        == accepted
+    )
+
+
+def test_volume_requires_full_prior_history_and_has_validated_mode(rules):
+    hourly, entries = histories()
+    config = StrategyConfiguration(pullback_period=2)
+    assert (
+        evaluate_pullback(
+            "BTCUSDT",
+            hourly,
+            entries[-20:],
+            rules,
+            config,
+            as_of=AS_OF,
+        ).reason
+        == "indicator warm-up is incomplete"
+    )
+    with pytest.raises(ValidationError):
+        StrategyConfiguration(volume_filter="unknown")
+    assert (
+        config.model_copy(update={"volume_filter": "disabled"}).implementation
+        == "ema-pullback-sr-v3"
+    )
+
+
+@pytest.mark.parametrize("pair", TIMEFRAME_PAIRS)
+@pytest.mark.parametrize("short", [False, True])
+def test_timeframe_pair_controls_closed_history_levels_and_setup_expiry(rules, pair, short):
+    hourly, entries = histories(short)
+    durations = [next_candle_open(AS_OF, interval) - AS_OF for interval in pair]
+
+    def retime(candles, original, duration):
+        return tuple(
+            replace(
+                candle,
+                open_time=AS_OF + (candle.open_time - AS_OF) / original * duration,
+                close_time=AS_OF
+                + (candle.open_time - AS_OF) / original * duration
+                + duration
+                - timedelta(milliseconds=1),
+            )
+            for candle in candles
+        )
+
+    hourly = retime(hourly, timedelta(hours=1), durations[1])
+    entries = retime(entries, timedelta(minutes=15), durations[0])
+    config = StrategyConfiguration()
+    result = evaluate_pullback(
+        "BTCUSDT",
+        hourly,
+        entries,
+        rules,
+        config,
+        as_of=AS_OF,
+        timeframes=pair,
+    )
+    assert result.setup is not None
+    setup = result.setup
+    assert setup.eligible_from == AS_OF
+    assert setup.expires_at == AS_OF + durations[0] * 3
+    assert setup.stop_level.timeframe in pair and setup.target_level.timeframe in pair
+    assert setup.stop_level.confirmed_at <= AS_OF and setup.target_level.confirmed_at <= AS_OF
+    assert (
+        evaluate_pullback(
+            "BTCUSDT",
+            hourly[:-1],
+            entries,
+            rules,
+            config,
+            as_of=AS_OF,
+            timeframes=pair,
+        ).reason
+        == "latest closed trend candle is stale"
+    )
+    assert (
+        evaluate_pullback(
+            "BTCUSDT",
+            hourly,
+            entries[:-1],
+            rules,
+            config,
+            as_of=AS_OF,
+            timeframes=pair,
+        ).reason
+        == "latest closed entry candle is stale"
+    )
+
+
 def test_unclosed_and_future_candles_cannot_change_signal(rules: SymbolRules) -> None:
     hourly, entries = histories()
     config = StrategyConfiguration()
@@ -239,7 +363,7 @@ def test_structural_prices_use_confirmed_levels_and_slippage_adjusted_ratio(rule
     )
     setup = result.setup
     assert setup is not None
-    assert setup.strategy_version == "ema-pullback-sr-v3"
+    assert setup.strategy_version == "ema-pullback-sr-v4"
     assert setup.stop_level is not None and setup.target_level is not None
     assert setup.stop_level.confirmed_at <= AS_OF
     assert setup.target_level.confirmed_at <= AS_OF

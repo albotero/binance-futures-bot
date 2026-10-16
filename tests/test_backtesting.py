@@ -6,11 +6,13 @@ import pytest
 from pydantic import ValidationError
 
 from futures_bot.backtesting import BacktestConfiguration, BacktestResult, run_backtest
+from futures_bot.data.candles import next_candle_open
 from futures_bot.exchange import FundingRate, Kline, SymbolRules
 from futures_bot.exchange.leverage import LeverageBracket, LeverageSchedule
 from futures_bot.risk import RiskPolicy
 from futures_bot.risk.configuration import RiskConfiguration, SymbolConfiguration
 from futures_bot.strategy import StrategyConfiguration, evaluate_pullback
+from futures_bot.strategy.pullback import TIMEFRAME_PAIRS
 
 START = datetime(2026, 10, 16, 12, tzinfo=UTC)
 D = Decimal
@@ -121,6 +123,60 @@ def test_reproducible_decimal_accounting_and_serialization(history, rules, risk)
     assert len(result.equity_curve) == 5
     assert result == simulate(history, rules, risk)
     assert BacktestResult.model_validate_json(result.model_dump_json()) == result
+
+
+@pytest.mark.parametrize("pair", TIMEFRAME_PAIRS)
+def test_backtest_uses_real_timeframe_bars_and_records_provenance(history, rules, risk, pair):
+    durations = [next_candle_open(START, interval) - START for interval in pair]
+
+    def retime(candles, original, duration):
+        return tuple(
+            replace(
+                candle,
+                open_time=START + (candle.open_time - START) / original * duration,
+                close_time=START
+                + (candle.open_time - START) / original * duration
+                + duration
+                - timedelta(milliseconds=1),
+            )
+            for candle in candles
+        )
+
+    hourly = retime(history[0], timedelta(hours=1), durations[1])
+    entries = retime(history[1], timedelta(minutes=15), durations[0])
+    result = run_backtest(
+        "BTCUSDC",
+        hourly,
+        entries,
+        (),
+        rules,
+        StrategyConfiguration(),
+        risk,
+        BacktestConfiguration(starting_balance="10000"),
+        start=START,
+        end=START + durations[0] * 4,
+        timeframes=pair,
+    )
+    assert len(result.trades) == 1
+    assert result.trades[0].entry_time == START
+    assert result.trades[0].exit_time == START + durations[0] * 4 - timedelta(milliseconds=1)
+    assert result.trades[0].stop_level.timeframe in pair
+    assert result.configuration_snapshot["timeframes"] == {"entry": pair[0], "trend": pair[1]}
+    assert BacktestResult.model_validate_json(result.model_dump_json()) == result
+    with pytest.raises(ValueError, match="boundaries must align"):
+        run_backtest(
+            "BTCUSDC",
+            hourly,
+            entries,
+            (),
+            rules,
+            StrategyConfiguration(),
+            risk,
+            BacktestConfiguration(starting_balance="10000"),
+            start=START + timedelta(minutes=1),
+            end=START + durations[0] * 4,
+            timeframes=pair,
+        )
 
 
 def test_fees_slippage_and_funding_reduce_equity_exactly(history, rules, risk) -> None:
@@ -344,7 +400,7 @@ def test_structural_target_passes_2r_after_slippage_but_worse_actual_gap_is_reje
     assert setup is not None
     result = simulate(history, rules, risk, configuration=simulation)
     assert result.trades
-    assert result.configuration_snapshot["strategy_version"] == "ema-pullback-sr-v3"
+    assert result.configuration_snapshot["strategy_version"] == "ema-pullback-sr-v4"
     assert result.trades[0].stop_level is not None
     assert result.trades[0].target_level is not None
     assert result.trades[0].stop_level.confirmed_at <= result.trades[0].entry_time

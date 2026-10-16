@@ -266,6 +266,9 @@ function App() {
               {Object.entries(strategy).filter(([key]) => !["time_stop_bars", "exit_policy"].includes(key) && (strategy.protection_mode === "legacy_atr" || !["atr_period", "atr_multiplier", "swing_period"].includes(key))).map(([key, value]) => <label key={key}>{key === "reward_multiple" ? "Minimum target reward / risk" : label(key)}{key === "cost_filter" ? <select value={value} onChange={e => setStrategy({ ...strategy, [key]: e.target.value })}>
                 <option value="gross_only">Gross price ratio after entry slippage (default)</option>
                 <option value="net_reward_risk">Experimental: reward/risk after fees and exit slippage</option>
+              </select> : key === "volume_filter" ? <select value={value} onChange={e => setStrategy({ ...strategy, [key]: e.target.value })}>
+                <option value="signal_above_prior_mean">Signal volume ≥ prior 20 closed bars' mean (default)</option>
+                <option value="disabled">Disabled (comparison / legacy)</option>
               </select> : key === "protection_mode" ? <select value={value} onChange={e => setStrategy({ ...strategy, [key]: e.target.value })}>
                 <option value="support_resistance">Confirmed support / resistance</option>
                 <option value="legacy_atr">Legacy ATR / exact-R (compatibility only)</option>
@@ -274,6 +277,7 @@ function App() {
                 onChange={e => setStrategy({ ...strategy, [key]: typeof value === "number" ? Number(e.target.value) : e.target.value })} />}
                 {key === "level_lookback_bars" && <small>Closed bars searched independently on each timeframe; 96 means 24 hours of 15m levels and 96 hours of 1h levels. Broken levels are excluded.</small>}
                 {key === "pivot_confirmation_bars" && <small>Closed candles required on each side of a strict swing high/low. A level cannot be used before its right-hand candles close.</small>}
+                {key === "volume_filter" && <small>Signal-bar base-asset volume must be at least the mean of the preceding 20 closed entry bars, excluding the signal. Applies to new runs only; existing paper snapshots are unchanged.</small>}
               </label>)}
               <button type="submit">Save strategy settings</button>
             </fieldset></form>

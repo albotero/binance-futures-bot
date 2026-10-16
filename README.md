@@ -354,13 +354,21 @@ before use, or be replaced with a USDC configuration and matching symbols.
 
 ## Strategy baseline
 
-The pure `ema-pullback-sr-v3` strategy uses closed 1-hour EMA50/EMA200 trend
+The pure `ema-pullback-sr-v4` strategy uses closed 1-hour EMA50/EMA200 trend
 alignment and a directional closed 15-minute candle that touches EMA20 and
 closes back on the trend side. A setup triggers one exchange tick beyond the
 signal candle for the next three bars. Stops and targets use confirmed support
 and resistance, not fixed percentages, ATR distances, or an arbitrary exact-R
 target:
 
+- Require signal-bar base-asset volume to be **at least the mean of the
+  preceding 20 closed entry bars**, excluding the signal itself. This fixed
+  volume confirmation applies symmetrically to longs and shorts, requires all
+  21 closed bars, and never reads the execution bar or future volume.
+  `volume_filter="signal_above_prior_mean"` is the new-run default;
+  `"disabled"` is available for explicit comparison and legacy snapshots.
+  Historical comparisons showed reduced turnover and losses in some samples,
+  not consistent profitability or an independently established trading edge.
 - Inspect the last 96 closed bars **per timeframe** (15m and 1h by default).
   A strict swing high/low must exceed/fall below two closed neighbors on each
   side; it is unavailable until the two right-hand bars close. Equal-price
@@ -411,6 +419,10 @@ Paper snapshots created before v3 retain their original timer and cost policy
 (`legacy_time_limit`, `gross_only`) rather than silently rewriting positions.
 New runs use protective-only defaults even when older saved strategy settings
 contain `time_stop_bars=8`. The dashboard hides legacy timer fields.
+Paper snapshots created before v4 retain `volume_filter="disabled"` if missing,
+so existing positions and pending entries are not rewritten. New runs using
+older saved operator settings without the field adopt volume confirmation.
+Existing explicit `"disabled"` selections remain disabled.
 
 ## Offline historical research
 
@@ -421,6 +433,18 @@ Provide complete ordered 1h/15m histories with warm-up, historical funding,
 exchange rules, explicit risk limits, and exact-decimal simulation assumptions.
 The function makes no network requests. Missing or inconsistent histories
 raise errors; denied entries include risk rejection reasons.
+
+For offline comparisons only, the optional `timeframes=(entry, trend)` keyword
+on `run_backtest` and `evaluate_pullback` accepts `("5m", "30m")`,
+`("15m", "1h")` (default), `("30m", "2h")`, or `("1h", "4h")`.
+Supply **actual matching interval candles**, not relabeled or time-scaled prices.
+Validation, closed-bar selection, stale-history checks, setup expiry and
+structural-level provenance all use the selected intervals. Result snapshots
+record the pair and dataset checksums use the actual interval names.
+EMA, volume and structural lookbacks remain fixed in bars, so their elapsed
+time naturally changes with timeframe; compare identical UTC date ranges.
+The dashboard research endpoint, paper worker and walk-forward service remain
+15m/1h; offline results never promote a different timeframe automatically.
 
 Results include a dataset checksum, engine/strategy versions, configuration
 snapshot, per-reason flat-position strategy evaluation counts, trade ledger

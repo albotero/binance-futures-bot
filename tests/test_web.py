@@ -140,6 +140,7 @@ def test_uninitialized_strategy_provides_all_editable_defaults(web):
         "protection_mode": "support_resistance",
         "level_lookback_bars": 96,
         "pivot_confirmation_bars": 2,
+        "volume_filter": "signal_above_prior_mean",
     }
     with factory() as session:
         assert session.get(ApplicationConfiguration, "runtime") is None

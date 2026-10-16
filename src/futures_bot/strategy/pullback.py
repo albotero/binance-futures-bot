@@ -9,11 +9,20 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
-from futures_bot.data.candles import find_candle_gaps
+from futures_bot.data.candles import find_candle_gaps, next_candle_open
 from futures_bot.exchange import Kline, SymbolRules
 
-STRATEGY_VERSION = "ema-pullback-sr-v3"
+STRATEGY_VERSION = "ema-pullback-sr-v4"
 Direction = Literal["long", "short"]
+StructureTimeframe = Literal["5m", "15m", "30m", "1h", "2h", "4h"]
+TimeframePair = tuple[StructureTimeframe, StructureTimeframe]
+TIMEFRAME_PAIRS: tuple[TimeframePair, ...] = (
+    ("5m", "30m"),
+    ("15m", "1h"),
+    ("30m", "2h"),
+    ("1h", "4h"),
+)
+DEFAULT_TIMEFRAMES: TimeframePair = ("15m", "1h")
 
 
 class StrategyConfiguration(BaseModel):
@@ -33,6 +42,7 @@ class StrategyConfiguration(BaseModel):
     protection_mode: Literal["support_resistance", "legacy_atr"] = "support_resistance"
     level_lookback_bars: StrictInt = Field(default=96, ge=10, le=500)
     pivot_confirmation_bars: StrictInt = Field(default=2, ge=1, le=10)
+    volume_filter: Literal["signal_above_prior_mean", "disabled"] = "signal_above_prior_mean"
 
     @field_validator("atr_multiplier", "reward_multiple", mode="before")
     @classmethod
@@ -55,6 +65,12 @@ class StrategyConfiguration(BaseModel):
 
     @property
     def implementation(self) -> str:
+        if self.volume_filter != "disabled":
+            return (
+                "ema-pullback-atr-volume-v4"
+                if self.protection_mode == "legacy_atr"
+                else STRATEGY_VERSION
+            )
         if self.protection_mode == "legacy_atr":
             return (
                 "ema-pullback-v1"
@@ -63,7 +79,7 @@ class StrategyConfiguration(BaseModel):
             )
         if self.exit_policy == "legacy_time_limit" and self.cost_filter == "gross_only":
             return "ema-pullback-sr-v2"
-        return STRATEGY_VERSION
+        return "ema-pullback-sr-v3"
 
     @property
     def effective_time_stop_bars(self) -> int | None:
@@ -71,12 +87,14 @@ class StrategyConfiguration(BaseModel):
 
     @property
     def entry_history_bars(self) -> int:
+        volume_bars = 21 if self.volume_filter != "disabled" else 0
         if self.protection_mode == "support_resistance":
-            return max(self.pullback_period, self.level_lookback_bars)
+            return max(self.pullback_period, self.level_lookback_bars, volume_bars)
         return max(
             self.pullback_period,
             self.atr_period + 1,
             self.swing_period,
+            volume_bars,
         )
 
     @property
@@ -91,14 +109,14 @@ class StrategyConfiguration(BaseModel):
 class StructureLevel:
     price: Decimal
     kind: Literal["support", "resistance"]
-    timeframe: Literal["15m", "1h"]
+    timeframe: StructureTimeframe
     pivot_time: datetime
     confirmed_at: datetime
 
 
 def confirmed_levels(
     candles: Sequence[Kline],
-    timeframe: Literal["15m", "1h"],
+    timeframe: StructureTimeframe,
     lookback: int,
     span: int,
 ) -> tuple[StructureLevel, ...]:
@@ -238,7 +256,11 @@ def evaluate_pullback(
     expected_entry_slippage: Decimal = Decimal(0),
     minimum_reward_to_risk: Decimal = Decimal(0),
     expected_fee_fraction: Decimal = Decimal(0),
+    timeframes: TimeframePair = DEFAULT_TIMEFRAMES,
 ) -> StrategyEvaluation:
+    if timeframes not in TIMEFRAME_PAIRS:
+        raise ValueError("unsupported entry/trend timeframe pair")
+    entry_interval, trend_interval = timeframes
     if rules.symbol != symbol:
         raise ValueError("exchange rules must match strategy symbol")
     if as_of.tzinfo is None or as_of.utcoffset() is None:
@@ -259,20 +281,26 @@ def evaluate_pullback(
         )
     hourly = tuple(candle for candle in hourly_candles if candle.close_time < as_of)
     entries = tuple(candle for candle in entry_candles if candle.close_time < as_of)
-    _validate_candles(hourly, "1h")
-    _validate_candles(entries, "15m")
+    _validate_candles(hourly, trend_interval)
+    _validate_candles(entries, entry_interval)
     warmup = (
         configuration.pullback_period
         if configuration.protection_mode == "support_resistance"
         else configuration.entry_history_bars
     )
+    if configuration.volume_filter != "disabled":
+        warmup = max(warmup, 21)
     if len(hourly) < configuration.trend_slow_period or len(entries) < warmup:
         return StrategyEvaluation(None, "indicator warm-up is incomplete")
     last = entries[-1]
-    eligible_from = last.open_time + timedelta(minutes=15)
+    eligible_from = next_candle_open(last.open_time, entry_interval)
     if eligible_from != as_of:
         return StrategyEvaluation(None, "latest closed entry candle is stale")
-    if hourly[-1].open_time + timedelta(hours=1) < as_of - timedelta(minutes=45):
+    entry_duration = next_candle_open(as_of, entry_interval) - as_of
+    trend_duration = next_candle_open(as_of, trend_interval) - as_of
+    if next_candle_open(hourly[-1].open_time, trend_interval) < (
+        as_of - trend_duration + entry_duration
+    ):
         return StrategyEvaluation(None, "latest closed trend candle is stale")
 
     with localcontext() as context:
@@ -290,6 +318,10 @@ def evaluate_pullback(
             direction = "short"
         else:
             return StrategyEvaluation(None, "no trend-aligned closed-candle pullback")
+        if configuration.volume_filter != "disabled":
+            reference = sum((candle.volume for candle in entries[-21:-1]), Decimal(0)) / 20
+            if last.volume < reference:
+                return StrategyEvaluation(None, "signal volume below prior 20-bar mean")
         stop_level = target_level = None
         expected_entry = None
         required_ratio = max(configuration.reward_multiple, minimum_reward_to_risk)
@@ -305,13 +337,13 @@ def evaluate_pullback(
             levels = (
                 *confirmed_levels(
                     entries,
-                    "15m",
+                    entry_interval,
                     configuration.level_lookback_bars,
                     configuration.pivot_confirmation_bars,
                 ),
                 *confirmed_levels(
                     hourly,
-                    "1h",
+                    trend_interval,
                     configuration.level_lookback_bars,
                     configuration.pivot_confirmation_bars,
                 ),
@@ -394,6 +426,7 @@ def evaluate_pullback(
                 rules,
                 configuration,
                 as_of=as_of,
+                entry_duration=entry_duration,
             )
         if min(entry, stop, target) <= 0:
             return StrategyEvaluation(None, "setup produces a non-positive protective price")
@@ -404,7 +437,7 @@ def evaluate_pullback(
     identity = (
         f"{configuration.implementation}:{checksum}:{symbol}:{direction}:"
         f"{last.close_time.isoformat()}:{expected_entry}:{required_ratio}:{stop}:{target}:"
-        f"{expected_fee_fraction}:{expected_entry_slippage}"
+        f"{expected_fee_fraction}:{expected_entry_slippage}:{entry_interval}:{trend_interval}"
     )
     return StrategyEvaluation(
         EntrySetup(
@@ -416,7 +449,7 @@ def evaluate_pullback(
             configuration_json=configuration.model_dump_json(),
             signal_time=last.close_time,
             eligible_from=eligible_from,
-            expires_at=eligible_from + timedelta(minutes=15 * configuration.entry_expiry_bars),
+            expires_at=eligible_from + entry_duration * configuration.entry_expiry_bars,
             entry_price=entry,
             stop_price=stop,
             target_price=target,
@@ -442,6 +475,7 @@ def _legacy_setup(
     configuration: StrategyConfiguration,
     *,
     as_of: datetime,
+    entry_duration: timedelta = timedelta(minutes=15),
 ) -> StrategyEvaluation:
     # Existing paper snapshots keep their original protection rules, not v2 levels.
     with localcontext() as context:
@@ -496,7 +530,7 @@ def _legacy_setup(
     checksum = configuration.checksum
     identity = (
         f"{configuration.implementation}:{checksum}:{symbol}:{direction}:"
-        f"{last.close_time.isoformat()}"
+        f"{last.close_time.isoformat()}:{entry_duration}"
     )
     return StrategyEvaluation(
         setup=EntrySetup(
@@ -508,7 +542,7 @@ def _legacy_setup(
             configuration_json=configuration.model_dump_json(),
             signal_time=last.close_time,
             eligible_from=eligible_from,
-            expires_at=eligible_from + timedelta(minutes=15 * configuration.entry_expiry_bars),
+            expires_at=eligible_from + entry_duration * configuration.entry_expiry_bars,
             entry_price=entry,
             stop_price=stop,
             target_price=target,
@@ -521,7 +555,8 @@ def _legacy_setup(
 def _validate_candles(candles: Sequence[Kline], interval: str) -> None:
     if find_candle_gaps(candles, interval):
         raise ValueError(f"{interval} strategy history contains missing candles")
-    seconds = 3600 if interval == "1h" else 900
+    anchor = datetime(2000, 1, 1, tzinfo=UTC)
+    seconds = int((next_candle_open(anchor, interval) - anchor).total_seconds())
     for candle in candles:
         stamp = candle.open_time.astimezone(UTC)
         if stamp.second or stamp.microsecond or (stamp.minute * 60 + stamp.hour * 3600) % seconds:

@@ -133,6 +133,7 @@ class PaperConfiguration(BaseModel):
                 "protection_mode": value.get("protection_mode", "legacy_atr"),
                 "exit_policy": value.get("exit_policy", "legacy_time_limit"),
                 "cost_filter": value.get("cost_filter", "gross_only"),
+                "volume_filter": value.get("volume_filter", "disabled"),
             }
         return value
 

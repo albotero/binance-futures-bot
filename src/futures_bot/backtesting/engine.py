@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from futures_bot.data.candles import next_candle_open
 from futures_bot.exchange import FundingRate, Kline, SymbolRules
 from futures_bot.risk import AccountState, PortfolioState, RiskDecision, RiskRequest, size_position
 from futures_bot.risk.configuration import RiskConfiguration
@@ -18,14 +19,17 @@ from futures_bot.risk.engine import UNVERIFIED_SIMULATION_MAX_LEVERAGE
 from futures_bot.strategy import EntrySetup, StrategyConfiguration, evaluate_pullback
 from futures_bot.strategy.lifecycle import evaluate_entry, evaluate_exit
 from futures_bot.strategy.pullback import (
+    DEFAULT_TIMEFRAMES,
+    TIMEFRAME_PAIRS,
     StructureLevel,
+    TimeframePair,
     _validate_candles,
     adverse_fill_price,
     net_reward_to_risk_passes,
 )
 
 ZERO = Decimal(0)
-BACKTEST_VERSION = "single-symbol-bars-v4"
+BACKTEST_VERSION = "single-symbol-bars-v5"
 
 
 class BacktestConfiguration(BaseModel):
@@ -146,6 +150,7 @@ def run_backtest(
     *,
     start: datetime,
     end: datetime,
+    timeframes: TimeframePair = DEFAULT_TIMEFRAMES,
 ) -> BacktestResult:
     """Run one symbol with no network access and at most one open position."""
     with localcontext(Context(prec=40)):
@@ -160,6 +165,7 @@ def run_backtest(
             configuration,
             start=start,
             end=end,
+            timeframes=timeframes,
         )
 
 
@@ -175,8 +181,12 @@ def _run_backtest(
     *,
     start: datetime,
     end: datetime,
+    timeframes: TimeframePair = DEFAULT_TIMEFRAMES,
 ) -> BacktestResult:
-    _validate_range(start, end)
+    if timeframes not in TIMEFRAME_PAIRS:
+        raise ValueError("unsupported entry/trend timeframe pair")
+    entry_interval, trend_interval = timeframes
+    _validate_range(start, end, entry_interval)
     symbol_settings = next((item for item in risk.symbols if item.symbol == symbol), None)
     if symbol_settings is None or not symbol_settings.enabled:
         raise ValueError("backtest symbol must be enabled in risk configuration")
@@ -188,11 +198,17 @@ def _run_backtest(
         raise ValueError("backtest symbol quote and collateral must match risk configuration")
     hourly = tuple(hourly_candles)
     entries = tuple(entry_candles)
-    _validate_candles(hourly, "1h")
-    _validate_candles(entries, "15m")
+    _validate_candles(hourly, trend_interval)
+    _validate_candles(entries, entry_interval)
     bars = tuple(candle for candle in entries if start <= candle.open_time < end)
-    if not bars or bars[0].open_time != start or bars[-1].open_time + timedelta(minutes=15) != end:
-        raise ValueError("backtest requires complete 15-minute coverage of the requested range")
+    if (
+        not bars
+        or bars[0].open_time != start
+        or next_candle_open(bars[-1].open_time, entry_interval) != end
+    ):
+        raise ValueError(
+            f"backtest requires complete {entry_interval} coverage of the requested range"
+        )
     # Evaluate at the first boundary to require sufficient, gap-free warm-up.
     initial = evaluate_pullback(
         symbol,
@@ -204,6 +220,7 @@ def _run_backtest(
         expected_entry_slippage=configuration.slippage_fraction,
         minimum_reward_to_risk=risk.policy.minimum_reward_to_risk,
         expected_fee_fraction=configuration.fee_fraction,
+        timeframes=timeframes,
     )
     _require_history(initial.reason)
     rates = _validate_funding(funding_rates, symbol, start, end)
@@ -256,6 +273,7 @@ def _run_backtest(
                 expected_entry_slippage=configuration.slippage_fraction,
                 minimum_reward_to_risk=risk.policy.minimum_reward_to_risk,
                 expected_fee_fraction=configuration.fee_fraction,
+                timeframes=timeframes,
             )
             observations[evaluation.reason] = observations.get(evaluation.reason, 0) + 1
             _require_history(evaluation.reason)
@@ -416,10 +434,11 @@ def _run_backtest(
         quote_asset=risk.quote_asset,
         start=start,
         end=end,
-        dataset_checksum=_dataset_checksum(hourly, entries, rates),
+        dataset_checksum=_dataset_checksum(hourly, entries, rates, timeframes),
         configuration_snapshot={
             "engine_version": BACKTEST_VERSION,
             "strategy_version": strategy.implementation,
+            "timeframes": {"entry": entry_interval, "trend": trend_interval},
             "strategy": strategy.model_dump(mode="json"),
             "risk": risk.model_dump(mode="json"),
             "simulation": configuration.model_dump(mode="json"),
@@ -565,13 +584,14 @@ def _slipped_price(price: Decimal, buy: bool, fraction: Decimal, tick: Decimal) 
     return adverse_fill_price(price, buy, fraction, tick)
 
 
-def _validate_range(start: datetime, end: datetime) -> None:
+def _validate_range(start: datetime, end: datetime, interval: str = "15m") -> None:
     for stamp in (start, end):
         if stamp.tzinfo is None or stamp.utcoffset() is None:
             raise ValueError("backtest dates must be timezone-aware")
         utc = stamp.astimezone(UTC)
-        if utc.minute % 15 or utc.second or utc.microsecond:
-            raise ValueError("backtest boundaries must align to 15-minute opens")
+        seconds = int((next_candle_open(utc, interval) - utc).total_seconds())
+        if utc.second or utc.microsecond or (utc.hour * 3600 + utc.minute * 60) % seconds:
+            raise ValueError(f"backtest boundaries must align to {interval} opens")
     if end <= start:
         raise ValueError("backtest end must follow start")
 
@@ -610,11 +630,15 @@ def _json_values(values: object) -> object:
 
 
 def _dataset_checksum(
-    hourly: Sequence[Kline], entries: Sequence[Kline], funding: Sequence[FundingRate]
+    hourly: Sequence[Kline],
+    entries: Sequence[Kline],
+    funding: Sequence[FundingRate],
+    timeframes: TimeframePair = DEFAULT_TIMEFRAMES,
 ) -> str:
+    entry_interval, trend_interval = timeframes
     values = {
-        "1h": [asdict(candle) for candle in hourly],
-        "15m": [asdict(candle) for candle in entries],
+        trend_interval: [asdict(candle) for candle in hourly],
+        entry_interval: [asdict(candle) for candle in entries],
         "funding": [asdict(rate) for rate in funding],
     }
     canonical = json.dumps(_json_values(values), sort_keys=True, separators=(",", ":"))
