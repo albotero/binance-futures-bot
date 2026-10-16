@@ -420,3 +420,14 @@ def test_private_address_nginx_waits_for_debian_network_initialization():
     installer = (root / "deploy/install.sh").read_text()
     assert 'render "$app_root/deploy/systemd/nginx-network.conf.in"' in installer
     assert "/etc/systemd/system/nginx.service.d/futures-platform.conf" in installer
+
+
+def test_nginx_redirects_to_fixed_configured_origin_before_proxying():
+    root = Path(__file__).resolve().parents[1]
+    template = (root / "deploy/nginx/futures-platform.conf.in").read_text()
+    rendered = template.replace("@LAN_NAME@", "binancebot.albotero.com")
+    assert 'if ($host != "binancebot.albotero.com")' in rendered
+    redirect = "return 308 https://binancebot.albotero.com$request_uri;"
+    assert redirect in rendered
+    assert rendered.index(redirect) < rendered.index("proxy_pass")
+    assert "https://$host" not in rendered

@@ -89,6 +89,16 @@ https://ASSIGNED_ADDRESS/ready`; do not use `curl -k` as certificate validation.
 Self-signed TLS is encrypted but is not publicly trusted, and requires manual
 renewal/client trust updates. It does not authorize Internet exposure.
 
+When a private DNS rewrite becomes available, rerun the installer with that
+hostname as `--lan-name` and retain the assigned IP as `--lan-address`. Renew
+the certificate with both `DNS:HOSTNAME` and `IP:ADDRESS` subject alternative
+names before reloading nginx. The app's exact `BOT_PUBLIC_ORIGIN` must match
+the browser's canonical HTTPS hostname; DNS and certificate changes alone do
+not update Host/Origin authorization. The proxy redirects alternate Host values
+to the fixed configured hostname, never to a request-supplied redirect target.
+Restart the app after rendering its new origin, reload nginx, and verify both
+hostname login/CSRF and the IP-to-hostname redirect with certificate validation.
+
 An unprivileged Debian 13 LXC may require Proxmox `nesting=1` for systemd mount
 namespaces. Verify startup mount failures and the hardened units on the target;
 if necessary, enable that feature on the existing container and reboot it.
