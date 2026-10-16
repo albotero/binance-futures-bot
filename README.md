@@ -152,6 +152,25 @@ Do not treat editing `.env` as the supported operator UI. The service still
 has no authentication or state-changing configuration endpoint; these backend
 helpers are preparation for the authenticated dashboard, not exposed controls.
 
+## Strategy baseline
+
+The pure `ema-pullback-v1` strategy uses closed 1-hour EMA50/EMA200 trend
+alignment and a directional closed 15-minute candle that touches EMA20 and
+closes back on the trend side. A setup triggers one exchange tick beyond the
+signal candle for the next three bars. Its stop uses the wider of the five-bar
+swing plus one tick or 1.5 times Wilder ATR14; the target is at least 2R after
+tick rounding. Unfilled setups invalidate at the stop or expire after three
+bars; positions have an eight-bar time stop. Bar ambiguity resolves stop-first,
+and adverse opening gaps are not filled at a fictitious trigger/stop price.
+
+Parameters are typed, serializable, and versioned for future web forms. Saving
+operator strategy settings uses the shared runtime version and audit, while
+retaining immutable parameter snapshots. Each generated setup carries its
+implementation version and configuration checksum. Incomplete candles cannot
+produce setups, indicator warm-up is required, and missing historical bars
+raise explicit errors. This is a research baseline, not evidence of a trading
+edge, and is not yet connected to an automated execution loop.
+
 ## Roadmap
 
 The implementation phases, acceptance criteria, architecture map, deployment
