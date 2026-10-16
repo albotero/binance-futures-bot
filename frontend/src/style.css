@@ -2,6 +2,7 @@
 *{box-sizing:border-box}body{margin:0}main{width:100%;max-width:1500px;margin:auto;padding:24px;min-width:0;overflow-wrap:anywhere}
 header,.toolbar,nav{display:flex;gap:16px;align-items:center;flex-wrap:wrap}header{justify-content:space-between;border-bottom:1px solid #30415a;padding-bottom:20px}
 h1{margin:0;font-size:1.8rem}h2{margin-top:0}p{color:#b2c3d8;line-height:1.6}.badge{background:#46360c;color:#ffe08b;border:1px solid #ad892e;border-radius:6px;padding:12px}
+.brand{display:flex;align-items:center;gap:14px}.brand>div{min-width:0}.brand p{margin:6px 0 0}.app-icon{display:block;flex:0 0 56px}
 button,input,select{font:inherit;border-radius:5px;border:1px solid #405875;padding:10px;background:#15253b;color:#f0f5fc;min-width:0;max-width:100%}button{cursor:pointer;margin:4px 4px 4px 0;white-space:normal;overflow-wrap:anywhere}button:hover{background:#25415e}button:disabled{opacity:.5;cursor:not-allowed}button[aria-current=page]{background:#254f77;border-color:#73b6e8}
 a{color:#8acfff;display:inline-block;margin:8px}nav{padding:20px 0;text-transform:capitalize}
 section{padding:24px;background:#101e30;border:1px solid #2b405a;border-radius:8px;margin:14px 0}

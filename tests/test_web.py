@@ -416,6 +416,17 @@ def test_static_dist_no_traversal_or_public_docs(web):
     with TestClient(app, base_url=ORIGIN) as static:
         assert static.get("/").status_code == 200
         assert "Futures Operator" in static.get("/").text
+        for path, content_type in (
+            ("/icon.svg", "image/svg+xml"),
+            ("/favicon.ico", "image/"),
+            ("/apple-touch-icon.png", "image/png"),
+        ):
+            assert f'href="{path}"' in static.get("/").text
+            icon = static.get(path)
+            assert icon.status_code == 200
+            assert icon.headers["content-type"].startswith(content_type)
+            assert icon.content
+        assert 'viewBox="0 0 64 64"' in static.get("/icon.svg").text
         assert static.get("/docs").status_code == 404
         assert static.get("/missing.js").status_code == 404
         assert static.get("/..%2F..%2Fpyproject.toml").status_code == 404

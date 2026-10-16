@@ -109,6 +109,12 @@ throttles and transactional paper-run checkpoints/events.
 
 ## Authenticated dashboard
 
+The dashboard uses an original blue/mint candlestick icon in its header,
+browser tabs and Apple home-screen shortcut. Source artwork is
+[`frontend/public/icon.svg`](frontend/public/icon.svg); the same directory
+contains the multi-size ICO fallback and 180-pixel touch icon. This is project
+artwork, not Binance branding or an indication of affiliation.
+
 Build the local React/TypeScript frontend and create the owner account:
 
 ```bash

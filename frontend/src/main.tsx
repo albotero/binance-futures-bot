@@ -175,7 +175,7 @@ function App() {
     setRisk({ ...risk, symbols: risk.symbols.map((symbol, i) => i === index ? { ...symbol, ...update } : symbol) });
 
   return <main>
-    <header><div><h1>Futures Operator</h1><p>Research &amp; paper operations</p></div>
+    <header><div className="brand"><img className="app-icon" src="/icon.svg" alt="" width="56" height="56" /><div><h1>Futures Operator</h1><p>Research &amp; paper operations</p></div></div>
       <strong className="badge">LIVE TRADING DISABLED</strong>
       {auth?.authenticated && <button disabled={busy} onClick={() => void attempt(async () => {
         await api("/api/auth/logout", "POST", {});
