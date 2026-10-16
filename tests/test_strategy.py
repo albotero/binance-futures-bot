@@ -16,6 +16,8 @@ AS_OF = datetime(2026, 10, 16, 12, tzinfo=UTC)
 def rules() -> SymbolRules:
     return SymbolRules(
         symbol="BTCUSDT",
+        quote_asset="USDT",
+        margin_asset="USDT",
         price_tick=Decimal("0.1"),
         min_price=Decimal("0.1"),
         max_price=Decimal("1000000"),

@@ -70,7 +70,12 @@ is implemented.
 
 The example file contains only bootstrap values. The initial safe defaults are
 paper mode, Binance testnet market data, and a dedicated database path
-`data/futures_platform.sqlite3`. The intended operator workflow is to configure
+`data/futures_platform.sqlite3`. **USDC is the default quote and account
+denomination**; USDT is available only as an explicit operator selection.
+Only trading perpetual contracts whose exchange-reported quote and margin
+assets both match the selected asset are eligible. There is no automatic
+USDT fallback when a USDC symbol or account is unavailable.
+The intended operator workflow is to configure
 symbols, strategy, risk limits, and per-symbol leverage in the authenticated
 web interface; these values are versioned and audited in the database rather
 than edited in `.env`. `.env` is reserved for host-specific bootstrap settings
@@ -140,6 +145,14 @@ exceed the policy cap or the platform's 20x ceiling. Entry evaluation applies
 the saved leverage, not a caller's requested override, and still checks the
 exchange limit.
 
+The risk document has a `quote_asset` selector (`"USDC"` by default or
+`"USDT"`). Every configured symbol must match that quote; use `BTCUSDC`, for
+example, for USDC. Saved account snapshots are isolated by both environment
+and denomination. Exchange metadata is checked during risk evaluation rather
+than trusting a symbol suffix alone. Switching quote requires matching symbols
+and a fresh matching account snapshot; USDC and USDT balances are never added
+or converted implicitly.
+
 The backend configuration repository requires the expected runtime version
 and saves its audit event in the same transaction. It preserves unrelated
 runtime fields and rejects stale updates. Money and fractional values are
@@ -151,6 +164,12 @@ configured; loading missing settings does not create default trading limits.
 Do not treat editing `.env` as the supported operator UI. The service still
 has no authentication or state-changing configuration endpoint; these backend
 helpers are preparation for the authenticated dashboard, not exposed controls.
+
+When upgrading an older installation, run `alembic upgrade head`. Account
+snapshots without a recorded denomination are retained as `UNKNOWN` and
+cannot be used for either USDC or USDT sizing; capture new normalized snapshots.
+Old USDT risk configurations must explicitly set `"quote_asset": "USDT"`
+before use, or be replaced with a USDC configuration and matching symbols.
 
 ## Strategy baseline
 

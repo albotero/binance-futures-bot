@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields
 from decimal import Decimal, InvalidOperation
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import (
     BaseModel,
@@ -67,6 +67,7 @@ class SymbolConfiguration(BaseModel):
 class RiskConfiguration(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    quote_asset: Literal["USDC", "USDT"] = "USDC"
     policy: RiskPolicy
     symbols: Annotated[tuple[SymbolConfiguration, ...], Field(min_length=1)]
 
@@ -109,6 +110,8 @@ class RiskConfiguration(BaseModel):
 
     @model_validator(mode="after")
     def validate_leverage_limits(self) -> RiskConfiguration:
+        if any(not symbol.symbol.endswith(self.quote_asset) for symbol in self.symbols):
+            raise ValueError("all configured symbols must match the selected quote asset")
         if any(symbol.leverage > self.policy.maximum_leverage for symbol in self.symbols):
             raise ValueError("symbol leverage exceeds the configured policy maximum")
         return self

@@ -43,6 +43,7 @@ def account(**overrides: object) -> AccountState:
         "used_initial_margin": Decimal("1000"),
         "open_exposure": Decimal("0"),
         "captured_at": NOW,
+        "quote_asset": "USDT",
     }
     values.update(overrides)
     return AccountState(**values)  # type: ignore[arg-type]
@@ -71,6 +72,8 @@ def request(**overrides: object) -> RiskRequest:
         "exchange_max_leverage": 20,
         "symbol_rules": SymbolRules(
             symbol="BTCUSDT",
+            quote_asset="USDT",
+            margin_asset="USDT",
             price_tick=Decimal("0.1"),
             min_price=Decimal("0.1"),
             max_price=Decimal("1000000"),
@@ -226,6 +229,8 @@ def test_exchange_minimum_quantity_and_notional_reject_undersized_orders() -> No
     min_notional_request = request(
         symbol_rules=SymbolRules(
             symbol="BTCUSDT",
+            quote_asset="USDT",
+            margin_asset="USDT",
             price_tick=Decimal("0.1"),
             min_price=Decimal("0.1"),
             max_price=Decimal("1000000"),

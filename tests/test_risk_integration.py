@@ -47,6 +47,7 @@ def session(tmp_path) -> Iterator[Session]:
 @pytest.fixture
 def settings() -> RiskConfiguration:
     return RiskConfiguration(
+        quote_asset="USDT",
         policy=RiskPolicy(
             basis="equity",
             risk_fraction=Decimal("0.01"),
@@ -75,6 +76,7 @@ def account_state() -> AccountState:
         used_initial_margin=Decimal("1000"),
         open_exposure=Decimal("3000"),
         captured_at=NOW,
+        quote_asset="USDT",
     )
 
 
@@ -90,6 +92,8 @@ def entry() -> RiskRequest:
         exchange_max_leverage=10,
         symbol_rules=SymbolRules(
             symbol="BTCUSDT",
+            quote_asset="USDT",
+            margin_asset="USDT",
             price_tick=Decimal("0.1"),
             min_price=Decimal("0.1"),
             max_price=Decimal("1000000"),
@@ -175,9 +179,10 @@ def test_duplicate_symbols_and_leverage_above_policy_cap_are_rejected(
     settings: RiskConfiguration,
 ) -> None:
     with pytest.raises(ValidationError, match="unique"):
-        RiskConfiguration(policy=settings.policy, symbols=settings.symbols * 2)
+        RiskConfiguration(quote_asset="USDT", policy=settings.policy, symbols=settings.symbols * 2)
     with pytest.raises(ValidationError, match="policy maximum"):
         RiskConfiguration(
+            quote_asset="USDT",
             policy=replace(settings.policy, maximum_leverage=2),
             symbols=(SymbolConfiguration(symbol="BTCUSDT", leverage=3),),
         )
@@ -262,12 +267,12 @@ def test_account_state_round_trip_and_environment_isolation(
         environment="production",
     )
     session.commit()
-    saved = load_latest_account_state(session, environment="simulated")
+    saved = load_latest_account_state(session, environment="simulated", quote_asset="USDT")
     assert saved.snapshot_id == first
     assert saved.state == account_state
     assert saved.environment == "simulated"
     with pytest.raises(MissingAccountSnapshot, match="testnet"):
-        load_latest_account_state(session, environment="testnet")
+        load_latest_account_state(session, environment="testnet", quote_asset="USDT")
 
 
 def test_account_selection_uses_capture_time_not_insertion_order(
@@ -280,7 +285,10 @@ def test_account_selection_uses_capture_time_not_insertion_order(
         environment="simulated",
     )
     session.commit()
-    assert load_latest_account_state(session, environment="simulated").snapshot_id == newest
+    assert (
+        load_latest_account_state(session, environment="simulated", quote_asset="USDT").snapshot_id
+        == newest
+    )
 
 
 def test_account_transaction_rollback_leaves_no_state(
@@ -300,6 +308,7 @@ def test_configured_evaluation_uses_persisted_leverage_and_tracks_provenance(
     portfolio: PortfolioState,
 ) -> None:
     configured = RiskConfiguration(
+        quote_asset="USDT",
         policy=settings.policy,
         symbols=(SymbolConfiguration(symbol="BTCUSDT", leverage=5),),
     )
@@ -330,6 +339,7 @@ def test_saved_risk_changes_affect_subsequent_decisions(
     session.commit()
     first = evaluate_configured_entry(session, entry, portfolio, environment="simulated", now=NOW)
     updated = RiskConfiguration(
+        quote_asset="USDT",
         policy=replace(settings.policy, risk_fraction=Decimal("0.005")),
         symbols=(SymbolConfiguration(symbol="BTCUSDT", leverage=3),),
     )
@@ -352,6 +362,7 @@ def test_configured_leverage_is_still_rejected_above_exchange_limit(
     portfolio: PortfolioState,
 ) -> None:
     configured = RiskConfiguration(
+        quote_asset="USDT",
         policy=settings.policy,
         symbols=(SymbolConfiguration(symbol="BTCUSDT", leverage=20),),
     )
@@ -370,6 +381,7 @@ def test_configured_evaluation_rejects_disabled_symbol_and_stale_accounts(
     portfolio: PortfolioState,
 ) -> None:
     disabled = RiskConfiguration(
+        quote_asset="USDT",
         policy=settings.policy,
         symbols=(SymbolConfiguration(symbol="BTCUSDT", enabled=False),),
     )
@@ -398,7 +410,7 @@ def test_invalid_persisted_account_is_not_accepted(
     row.available_balance = Decimal("-1")
     session.commit()
     with pytest.raises(ValueError, match="cannot be negative"):
-        load_latest_account_state(session, environment="simulated")
+        load_latest_account_state(session, environment="simulated", quote_asset="USDT")
 
 
 def test_tiny_equity_never_produces_an_accepted_zero_quantity(
@@ -416,3 +428,108 @@ def test_tiny_equity_never_produces_an_accepted_zero_quantity(
     )
     assert not result.accepted
     assert result.quantity is None
+
+
+def test_usdc_is_default_quote_and_usdt_remains_an_explicit_option(
+    settings: RiskConfiguration,
+) -> None:
+    default = RiskConfiguration(
+        policy=settings.policy, symbols=(SymbolConfiguration(symbol="BTCUSDC"),)
+    )
+    assert default.quote_asset == "USDC"
+    assert default.symbols[0].leverage == 1
+    assert RiskConfiguration.model_validate_json(default.model_dump_json()) == default
+    assert settings.quote_asset == "USDT"
+    with pytest.raises(ValidationError, match="selected quote"):
+        RiskConfiguration(policy=settings.policy, symbols=(SymbolConfiguration(symbol="BTCUSDT"),))
+    with pytest.raises(ValidationError):
+        RiskConfiguration.model_validate({**default.model_dump(mode="json"), "quote_asset": "BTC"})
+
+
+def test_account_queries_isolate_usdc_and_usdt_balances(
+    session: Session, account_state: AccountState
+) -> None:
+    usdc = replace(account_state, quote_asset="USDC", available_balance=Decimal("200"))
+    usdc_id = save_account_state(session, usdc, environment="simulated")
+    usdt_id = save_account_state(
+        session,
+        replace(account_state, captured_at=NOW + timedelta(seconds=1)),
+        environment="simulated",
+    )
+    session.commit()
+    assert load_latest_account_state(session, environment="simulated").snapshot_id == usdc_id
+    assert load_latest_account_state(session, environment="simulated").state == usdc
+    assert (
+        load_latest_account_state(session, environment="simulated", quote_asset="USDT").snapshot_id
+        == usdt_id
+    )
+
+
+def test_usdc_entry_uses_only_usdc_account_and_exchange_metadata(
+    session: Session,
+    settings: RiskConfiguration,
+    account_state: AccountState,
+    entry: RiskRequest,
+    portfolio: PortfolioState,
+) -> None:
+    configured = RiskConfiguration(
+        policy=settings.policy, symbols=(SymbolConfiguration(symbol="BTCUSDC"),)
+    )
+    save_risk_configuration(session, configured, actor="op", expected_version=0)
+    save_account_state(session, account_state, environment="simulated")
+    usdc_entry = replace(
+        entry,
+        symbol="BTCUSDC",
+        symbol_rules=replace(
+            entry.symbol_rules, symbol="BTCUSDC", quote_asset="USDC", margin_asset="USDC"
+        ),
+    )
+    with pytest.raises(MissingAccountSnapshot, match="USDC"):
+        evaluate_configured_entry(session, usdc_entry, portfolio, environment="simulated", now=NOW)
+    save_account_state(session, replace(account_state, quote_asset="USDC"), environment="simulated")
+    decision = evaluate_configured_entry(
+        session, usdc_entry, portfolio, environment="simulated", now=NOW
+    )
+    assert decision.decision.accepted
+    assert decision.leverage == 1
+    with pytest.raises(ValueError, match="metadata"):
+        evaluate_configured_entry(
+            session,
+            replace(
+                usdc_entry,
+                symbol_rules=replace(usdc_entry.symbol_rules, margin_asset="USDT"),
+            ),
+            portfolio,
+            environment="simulated",
+            now=NOW,
+        )
+
+
+def test_sizing_cannot_use_the_other_quote_balance(
+    settings: RiskConfiguration,
+    account_state: AccountState,
+    entry: RiskRequest,
+    portfolio: PortfolioState,
+) -> None:
+    result = size_position(
+        replace(entry, leverage=1),
+        replace(account_state, quote_asset="USDC"),
+        portfolio,
+        settings.policy,
+        now=NOW,
+    )
+    assert not result.accepted
+    assert any("denomination" in reason for reason in result.reasons)
+
+
+def test_unknown_legacy_account_denomination_is_never_assumed(
+    session: Session, account_state: AccountState
+) -> None:
+    snapshot = save_account_state(session, account_state, environment="simulated")
+    row = session.get(AccountSnapshot, snapshot)
+    assert row is not None
+    row.quote_asset = "UNKNOWN"
+    session.commit()
+    for quote in ("USDC", "USDT"):
+        with pytest.raises(MissingAccountSnapshot):
+            load_latest_account_state(session, environment="simulated", quote_asset=quote)

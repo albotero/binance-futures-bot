@@ -11,6 +11,8 @@ from futures_bot.exchange import (
     BinancePayloadError,
     BinanceUSDmClient,
     ClockSkewError,
+    ExchangeInformation,
+    ExchangeSymbol,
     MarkPrice,
     SymbolPriceTicker,
 )
@@ -123,6 +125,49 @@ def test_exchange_information_validates_public_symbol_metadata() -> None:
     assert rules.quantity_step == Decimal("0.001")
     assert rules.market_quantity_step == Decimal("0")
     assert rules.min_notional == Decimal("5")
+    assert rules.quote_asset == "USDT"
+    assert rules.margin_asset == "USDT"
+
+
+def test_symbol_discovery_defaults_to_usdc_using_exchange_metadata() -> None:
+    def metadata(symbol: str, quote: str, margin: str, status: str = "TRADING") -> ExchangeSymbol:
+        return ExchangeSymbol.model_validate(
+            {
+                "symbol": symbol,
+                "status": status,
+                "contractType": "PERPETUAL",
+                "baseAsset": "BTC",
+                "quoteAsset": quote,
+                "marginAsset": margin,
+                "pricePrecision": 2,
+                "quantityPrecision": 3,
+                "filters": [
+                    {
+                        "filterType": "PRICE_FILTER",
+                        "minPrice": "0.1",
+                        "maxPrice": "1000000",
+                        "tickSize": "0.1",
+                    },
+                    {
+                        "filterType": "LOT_SIZE",
+                        "minQty": "0.001",
+                        "maxQty": "1000",
+                        "stepSize": "0.001",
+                    },
+                ],
+            }
+        )
+
+    information = ExchangeInformation(
+        symbols=(
+            metadata("BTCUSDC", "USDC", "USDC"),
+            metadata("BTCUSDT", "USDT", "USDT"),
+            metadata("ETHUSDC", "USDC", "USDT"),
+            metadata("SOLUSDC", "USDC", "USDC", "SETTLING"),
+        )
+    )
+    assert [symbol.symbol for symbol in information.tradable_symbols()] == ["BTCUSDC"]
+    assert [symbol.symbol for symbol in information.tradable_symbols("USDT")] == ["BTCUSDT"]
 
 
 def test_clock_skew_rejects_a_local_clock_outside_tolerance() -> None:

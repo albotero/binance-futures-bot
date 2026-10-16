@@ -32,6 +32,7 @@ def save_account_state(
     _validate_environment(environment)
     row = AccountSnapshot(
         environment=environment,
+        quote_asset=state.quote_asset,
         wallet_balance=state.wallet_balance,
         available_balance=state.available_balance,
         account_equity=state.equity,
@@ -50,17 +51,21 @@ def load_latest_account_state(
     session: Session,
     *,
     environment: AccountEnvironment,
+    quote_asset: Literal["USDC", "USDT"] = "USDC",
 ) -> StoredAccountState:
     _validate_environment(environment)
+    if quote_asset not in ("USDC", "USDT"):
+        raise ValueError("quote asset must be USDC or USDT")
     row = session.scalar(
         select(AccountSnapshot)
         .where(AccountSnapshot.environment == environment)
+        .where(AccountSnapshot.quote_asset == quote_asset)
         .order_by(AccountSnapshot.captured_at.desc(), AccountSnapshot.id.desc())
         .limit(1)
         .execution_options(populate_existing=True)
     )
     if row is None:
-        raise MissingAccountSnapshot(f"no account snapshot exists for {environment}")
+        raise MissingAccountSnapshot(f"no {quote_asset} account snapshot exists for {environment}")
     return StoredAccountState(
         snapshot_id=row.id,
         environment=environment,
@@ -73,6 +78,7 @@ def load_latest_account_state(
             used_initial_margin=row.used_initial_margin,
             open_exposure=row.open_exposure,
             captured_at=row.captured_at,
+            quote_asset=quote_asset,
         ),
     )
 

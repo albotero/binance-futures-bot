@@ -152,10 +152,17 @@ class AccountSnapshot(Base):
             name="ck_account_snapshot_environment",
         ),
         Index("ix_account_snapshots_captured_at", "captured_at"),
+        Index(
+            "ix_account_snapshots_environment_quote_time",
+            "environment",
+            "quote_asset",
+            "captured_at",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     environment: Mapped[str] = mapped_column(String(16), nullable=False)
+    quote_asset: Mapped[str] = mapped_column(String(16), nullable=False, server_default="UNKNOWN")
     wallet_balance: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
     available_balance: Mapped[Decimal] = mapped_column(MONEY, nullable=False)
     account_equity: Mapped[Decimal] = mapped_column(MONEY, nullable=False)

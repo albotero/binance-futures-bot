@@ -24,8 +24,11 @@ class AccountState:
     used_initial_margin: Decimal
     open_exposure: Decimal
     captured_at: datetime
+    quote_asset: Literal["USDC", "USDT"] = "USDC"
 
     def __post_init__(self) -> None:
+        if self.quote_asset not in ("USDC", "USDT"):
+            raise ValueError("account quote asset must be USDC or USDT")
         for name in (
             "wallet_balance",
             "available_balance",
@@ -196,6 +199,11 @@ def size_position(
     stop_distance = abs(request.entry_price - request.stop_price)
     reasons: list[str] = []
 
+    if (
+        request.symbol_rules.quote_asset != account.quote_asset
+        or request.symbol_rules.margin_asset != account.quote_asset
+    ):
+        reasons.append("exchange quote and margin assets must match the account denomination")
     if account.captured_at > current_time:
         reasons.append("account snapshot timestamp is in the future")
     elif current_time - account.captured_at.astimezone(UTC) > policy.maximum_account_age:
@@ -350,6 +358,8 @@ def _quantity_rules(rules: SymbolRules) -> tuple[Decimal, Decimal, Decimal]:
 
 
 def _validate_symbol_rules(rules: SymbolRules) -> None:
+    if rules.quote_asset not in ("USDC", "USDT") or rules.margin_asset != rules.quote_asset:
+        raise ValueError("only same-asset USDC or USDT collateral contracts are supported")
     for name in (
         "price_tick",
         "min_price",

@@ -72,6 +72,8 @@ class SymbolFilter(BaseModel):
 @dataclass(frozen=True, slots=True)
 class SymbolRules:
     symbol: str
+    quote_asset: str
+    margin_asset: str
     price_tick: Decimal
     min_price: Decimal
     max_price: Decimal
@@ -178,6 +180,8 @@ class ExchangeSymbol(BaseModel):
         assert lot.max_quantity is not None
         return SymbolRules(
             symbol=self.symbol,
+            quote_asset=self.quote_asset,
+            margin_asset=self.margin_asset,
             price_tick=price.tick_size,
             min_price=price.min_price,
             max_price=price.max_price,
@@ -195,6 +199,20 @@ class ExchangeInformation(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
 
     symbols: tuple[ExchangeSymbol, ...]
+
+    def tradable_symbols(
+        self, quote_asset: Literal["USDC", "USDT"] = "USDC"
+    ) -> tuple[ExchangeSymbol, ...]:
+        if quote_asset not in ("USDC", "USDT"):
+            raise ValueError("quote asset must be USDC or USDT")
+        return tuple(
+            symbol
+            for symbol in self.symbols
+            if symbol.status == "TRADING"
+            and symbol.contract_type == "PERPETUAL"
+            and symbol.quote_asset == quote_asset
+            and symbol.margin_asset == quote_asset
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -409,7 +427,7 @@ class BinanceUSDmClient:
         if symbol is not None:
             _validate_symbol(symbol)
 
-        params = {"symbol": symbol} if symbol is not None else None
+        params: dict[str, str | int] | None = {"symbol": symbol} if symbol is not None else None
         payload = await self._get("/fapi/v2/ticker/price", params)
         rows = _response_rows(payload, symbol, "symbol-price ticker")
         tickers = tuple(_parse_symbol_price_ticker(row) for row in rows)
@@ -424,7 +442,7 @@ class BinanceUSDmClient:
         if symbol is not None:
             _validate_symbol(symbol)
 
-        params = {"symbol": symbol} if symbol is not None else None
+        params: dict[str, str | int] | None = {"symbol": symbol} if symbol is not None else None
         payload = await self._get("/fapi/v1/premiumIndex", params)
         rows = _response_rows(payload, symbol, "mark-price")
         prices = tuple(_parse_mark_price(row) for row in rows)

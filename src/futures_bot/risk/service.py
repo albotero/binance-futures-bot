@@ -31,7 +31,14 @@ def evaluate_configured_entry(
     symbol = next((item for item in settings.symbols if item.symbol == request.symbol), None)
     if symbol is None or not symbol.enabled:
         raise ValueError("entry symbol is not enabled in operator configuration")
-    account = load_latest_account_state(session, environment=environment)
+    if (
+        request.symbol_rules.quote_asset != settings.quote_asset
+        or request.symbol_rules.margin_asset != settings.quote_asset
+    ):
+        raise ValueError("exchange symbol metadata does not match the configured quote asset")
+    account = load_latest_account_state(
+        session, environment=environment, quote_asset=settings.quote_asset
+    )
     configured_request = replace(request, leverage=symbol.leverage)
     decision = size_position(
         configured_request,
