@@ -145,7 +145,13 @@ def configure_web(
         mutation = request.method not in {"GET", "HEAD", "OPTIONS"}
         if mutation and origin not in settings.allowed_origins:
             return denied(403, "same-origin Origin header required")
-        if request.headers.get("sec-fetch-site") == "cross-site":
+        public_document_navigation = (
+            request.method in {"GET", "HEAD"}
+            and request.url.path == "/"
+            and request.headers.get("sec-fetch-mode") == "navigate"
+            and request.headers.get("sec-fetch-dest") == "document"
+        )
+        if request.headers.get("sec-fetch-site") == "cross-site" and not public_document_navigation:
             return denied(403, "cross-site request refused")
         if request.url.path.startswith("/api/"):
             if mutation:

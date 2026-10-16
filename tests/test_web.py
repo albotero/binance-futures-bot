@@ -207,6 +207,56 @@ def test_host_origin_enforcement_and_docs(web):
     )
 
 
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+def test_cross_site_top_level_entry_can_load_public_dashboard(web, method):
+    client, _, app = web
+
+    @app.api_route("/", methods=["GET", "HEAD"])
+    def dashboard():
+        return {"public_shell": True}
+
+    headers = {
+        "Sec-Fetch-Site": "cross-site",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Dest": "document",
+    }
+    response = client.request(method, "/", headers=headers)
+    assert response.status_code == 200
+    assert response.headers["x-frame-options"] == "DENY"
+    assert client.get("/api/audit").status_code == 401
+    assert client.get("/api/auth/session", headers=headers).status_code == 403
+    assert client.post("/", headers=headers).status_code == 403
+    assert client.get("/", headers={**headers, "Host": "evil.example"}).status_code == 400
+    assert client.get("/", headers={**headers, "Origin": "https://evil.example"}).status_code == 403
+    token = login(client)
+    assert (
+        client.post(
+            "/api/auth/logout",
+            headers={**headers, "Origin": ORIGIN, "X-CSRF-Token": token},
+        ).status_code
+        == 403
+    )
+
+
+@pytest.mark.parametrize(
+    "mode,destination",
+    [("navigate", "iframe"), ("cors", "empty"), ("no-cors", "image"), ("", "")],
+)
+def test_cross_site_entry_exception_excludes_embeds_and_fetches(web, mode, destination):
+    client, _, _ = web
+    assert (
+        client.get(
+            "/",
+            headers={
+                "Sec-Fetch-Site": "cross-site",
+                "Sec-Fetch-Mode": mode,
+                "Sec-Fetch-Dest": destination,
+            },
+        ).status_code
+        == 403
+    )
+
+
 def test_login_throttle_and_generic_failure(web):
     client, _, _ = web
     token = csrf(client)

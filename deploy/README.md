@@ -99,6 +99,14 @@ to the fixed configured hostname, never to a request-supplied redirect target.
 Restart the app after rendering its new origin, reload nginx, and verify both
 hostname login/CSRF and the IP-to-hostname redirect with certificate validation.
 
+Cross-site links and IP-to-hostname redirects may retain
+`Sec-Fetch-Site: cross-site` during the top-level document navigation. The app
+allows only GET/HEAD entry to `/` with fetch mode `navigate` and destination
+`document`; it serves the public dashboard shell, not authenticated data.
+Cross-site API requests, mutations, embedded frames and resource fetches remain
+blocked. Host/Origin validation, CSRF checks and strict session cookies remain
+enabled. Include this navigation case in deployment acceptance.
+
 An unprivileged Debian 13 LXC may require Proxmox `nesting=1` for systemd mount
 namespaces. Verify startup mount failures and the hardened units on the target;
 if necessary, enable that feature on the existing container and reboot it.
