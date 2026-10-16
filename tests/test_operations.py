@@ -409,3 +409,14 @@ def test_deployment_runtime_template_uses_actual_application_settings():
         "BOT_FRONTEND_DIRECTORY=/opt/futures-platform/releases/approved/frontend/dist" in rendered
     )
     assert "BOT_SESSION_LIFETIME_SECONDS=28800" in rendered
+
+
+def test_private_address_nginx_waits_for_debian_network_initialization():
+    root = Path(__file__).resolve().parents[1]
+    dropin = (root / "deploy/systemd/nginx-network.conf.in").read_text()
+    assert "[Unit]\nAfter=networking.service" in dropin
+    assert "Restart=on-failure" in dropin
+    assert "RestartSec=5" in dropin
+    installer = (root / "deploy/install.sh").read_text()
+    assert 'render "$app_root/deploy/systemd/nginx-network.conf.in"' in installer
+    assert "/etc/systemd/system/nginx.service.d/futures-platform.conf" in installer

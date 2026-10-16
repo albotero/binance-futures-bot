@@ -1,0 +1,6 @@
+[Unit]
+After=networking.service
+
+[Service]
+Restart=on-failure
+RestartSec=5

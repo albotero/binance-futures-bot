@@ -177,6 +177,9 @@ for unit in futures-platform.service futures-paper-worker.service futures-backup
     futures-backup.timer; do
     render "$app_root/deploy/systemd/$unit.in" "/etc/systemd/system/$unit"
 done
+install -d -o root -g root -m 0755 /etc/systemd/system/nginx.service.d
+render "$app_root/deploy/systemd/nginx-network.conf.in" \
+    /etc/systemd/system/nginx.service.d/futures-platform.conf
 render "$app_root/deploy/runtime.env.in" /etc/futures-platform/runtime.env
 [[ ! -L /etc/futures-platform/runtime.env ]] || fail "Runtime environment must not be a symlink."
 chown root:futures-bot /etc/futures-platform/runtime.env

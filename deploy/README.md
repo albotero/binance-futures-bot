@@ -47,9 +47,9 @@ runtime user. Build logs are owner-only in that release. Runtime code becomes
 root-owned; `futures-bot` can write only its private state directory. Backups run
 under the same UID but in a separate read-only-state, network-disabled service.
 No retention/deletion or off-site upload is automatic.
-IPAM reservation/subnet is currently unknown: do not substitute an arbitrary IP,
-change DNS, install on a host, or activate services until the reservation and LAN
-firewall rules are confirmed. The public-looking DNS name does not authorize
+Confirm the assigned address/subnet and LAN restrictions before activation; do
+not substitute an arbitrary IP or modify unrelated DNS/firewall configuration.
+The public-looking DNS name does not authorize
 public exposure; nginx remains bound and allowlisted to the approved private LAN.
 
 Each `.in` file has explicit `@PLACEHOLDERS@`; do not install it verbatim.
@@ -60,6 +60,46 @@ templates rather than editing generated files. TLS key contents are never templa
 printed. Provision a LAN-trusted certificate/key separately; key readability must
 be restricted to nginx's privileged master process. Bind only the private
 interface, retain firewall LAN restrictions, and do not forward this port publicly.
+
+### Private-IP TLS without a DNS record
+
+If the operator explicitly accepts a self-signed certificate, use the assigned
+private address for both `--lan-name` and `--lan-address`. This renders the
+matching HTTPS origin and nginx server name; a DNS record is unnecessary.
+Generate a certificate on the guest with an **IP subject alternative name**,
+not just a matching common name. For example, substituting the assigned address:
+
+```sh
+sudo install -d -o root -g root -m 0700 /etc/futures-platform/tls
+sudo sh -c 'umask 077; openssl req -x509 -newkey rsa:3072 -sha256 \
+  -days 365 -nodes \
+  -keyout /etc/futures-platform/tls/server.key \
+  -out /etc/futures-platform/tls/server.crt \
+  -subj /CN=172.17.20.121 \
+  -addext subjectAltName=IP:172.17.20.121 \
+  -addext extendedKeyUsage=serverAuth'
+```
+
+Point the installer at these files. Record the SHA256 certificate fingerprint
+and expiry through a trusted management channel. Export only the **public
+certificate**, never the private key, to clients that need to trust it.
+Browser trust must be configured or a certificate warning will appear.
+For automated acceptance, use `curl --cacert PUBLIC_CERTIFICATE
+https://ASSIGNED_ADDRESS/ready`; do not use `curl -k` as certificate validation.
+Self-signed TLS is encrypted but is not publicly trusted, and requires manual
+renewal/client trust updates. It does not authorize Internet exposure.
+
+An unprivileged Debian 13 LXC may require Proxmox `nesting=1` for systemd mount
+namespaces. Verify startup mount failures and the hardened units on the target;
+if necessary, enable that feature on the existing container and reboot it.
+Do not make the container privileged or disable service hardening to bypass
+namespace errors.
+
+The installer adds an nginx systemd drop-in ordering it after Debian
+`networking.service`, with a five-second failure retry. A dependency on
+`network-online.target` alone did not wait for ifupdown2 address assignment in
+target acceptance: binding the private address failed during reboot. Keep the
+explicit ordering and verify a full container reboot, not only an nginx restart.
 
 ## Integration and explicit activation
 
@@ -87,6 +127,7 @@ sudo systemctl stop futures-backup.timer futures-backup.service \
   futures-paper-worker.service futures-platform.service
 # For an existing database, take and verify a backup BEFORE migrating (below).
 sudo -u futures-bot sh -c '
+  umask 077 &&
   cd "$1" &&
   BOT_DATABASE_URL=sqlite:////var/lib/futures-platform/platform.sqlite3 \
     .venv/bin/alembic -c alembic.ini upgrade head
@@ -100,7 +141,8 @@ sudo -u futures-bot "$RELEASE/.venv/bin/python" -m futures_bot.web.bootstrap \
 sudo nginx -t
 sudo systemd-analyze verify /etc/systemd/system/futures-platform.service \
   /etc/systemd/system/futures-paper-worker.service \
-  /etc/systemd/system/futures-backup.service /etc/systemd/system/futures-backup.timer
+  /etc/systemd/system/futures-backup.service /etc/systemd/system/futures-backup.timer \
+  nginx.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now futures-platform.service futures-paper-worker.service \
   futures-backup.timer
@@ -108,6 +150,13 @@ sudo systemctl reload nginx
 sudo systemctl is-active futures-platform.service futures-paper-worker.service
 curl --fail --silent --show-error https://binancebot.albotero.com/
 ```
+
+Allow startup to complete before checking readiness (a successful
+`systemctl start` alone does not prove HTTP responsiveness). Check through the
+HTTPS origin, or supply its exact Host header when probing loopback: Host
+validation intentionally rejects an unconfigured `127.0.0.1` host. Verify the
+database and any WAL/SHM files remain private to the service account; the state
+directory must stay mode 0700. Do not weaken origin checks for health probes.
 
 Run owner bootstrap only for the first installation; it intentionally refuses to
 replace existing credentials. First installation must handle absent units rather
