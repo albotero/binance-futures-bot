@@ -175,6 +175,103 @@ def test_symbol_discovery_defaults_to_usdc_using_exchange_metadata() -> None:
     ]
 
 
+@pytest.mark.parametrize("status", ["PENDING_TRADING", "SETTLING"])
+@pytest.mark.parametrize("zero_increment", ["price", "quantity"])
+def test_inactive_zero_increment_metadata_cannot_produce_trading_rules(
+    status: str, zero_increment: str
+) -> None:
+    async def handler(_: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            200,
+            json={
+                "symbols": [
+                    {
+                        "symbol": symbol,
+                        "status": state,
+                        "contractType": "PERPETUAL",
+                        "baseAsset": base,
+                        "quoteAsset": "USDC",
+                        "marginAsset": "USDC",
+                        "pricePrecision": 2,
+                        "quantityPrecision": 3,
+                        "filters": [
+                            {
+                                "filterType": "PRICE_FILTER",
+                                "minPrice": "0",
+                                "maxPrice": "1000000",
+                                "tickSize": "0"
+                                if state != "TRADING" and zero_increment == "price"
+                                else "0.01",
+                            },
+                            {
+                                "filterType": "LOT_SIZE",
+                                "minQty": "0.001",
+                                "maxQty": "1000",
+                                "stepSize": "0"
+                                if state != "TRADING" and zero_increment == "quantity"
+                                else "0.001",
+                            },
+                        ],
+                    }
+                    for symbol, state, base in (
+                        ("BTCUSDC", "TRADING", "BTC"),
+                        ("ELSAUSDC", status, "ELSA"),
+                    )
+                ]
+            },
+        )
+
+    information = run_client(
+        BinanceUSDmClient(transport=httpx2.MockTransport(handler)),
+        lambda client: client.exchange_information(),
+    )
+    assert len(information.symbols) == 2
+    assert [item.symbol for item in information.tradable_symbols()] == ["BTCUSDC"]
+    assert information.symbols[0].rules().price_tick == Decimal("0.01")
+    with pytest.raises(ValueError, match="not trading"):
+        information.symbols[1].rules()
+
+
+@pytest.mark.parametrize(
+    ("status", "increment"),
+    [
+        ("TRADING", "0"),
+        ("TRADING", "-1"),
+        ("PENDING_TRADING", "-1"),
+        ("PENDING_TRADING", "NaN"),
+        ("SETTLING", "Infinity"),
+    ],
+)
+def test_invalid_symbol_increments_still_fail_closed(status: str, increment: str) -> None:
+    with pytest.raises(ValueError):
+        ExchangeSymbol.model_validate(
+            {
+                "symbol": "BTCUSDC",
+                "status": status,
+                "contractType": "PERPETUAL",
+                "baseAsset": "BTC",
+                "quoteAsset": "USDC",
+                "marginAsset": "USDC",
+                "pricePrecision": 2,
+                "quantityPrecision": 3,
+                "filters": [
+                    {
+                        "filterType": "PRICE_FILTER",
+                        "minPrice": "0",
+                        "maxPrice": "1000000",
+                        "tickSize": increment,
+                    },
+                    {
+                        "filterType": "LOT_SIZE",
+                        "minQty": "0.001",
+                        "maxQty": "1000",
+                        "stepSize": "0.001",
+                    },
+                ],
+            }
+        )
+
+
 def test_unicode_symbol_queries_are_encoded_without_changing_identity() -> None:
     symbol = "\u5e01\u5b89\u4eba\u751fUSDT"
 

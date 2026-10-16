@@ -172,6 +172,9 @@ metadata per environment for up to 60 seconds. Choose the public production
 directory or testnet directory explicitly; this does not enable real-money
 trading or change a paper run's data environment. Unavailable data is reported
 with a retry control; no invented contracts or alternate quote fallback is used.
+Inactive contracts may have zero exchange increments in their metadata, but
+are never selectable and cannot produce executable trading rules. Trading
+contracts still require positive increments; invalid metadata fails closed.
 The authenticated endpoint is `GET /api/market/contracts` with optional
 `quote_asset=USDC|USDT` and `environment=production|testnet`.
 
@@ -374,5 +377,5 @@ activation is introduced.
 
 The implementation phases, acceptance criteria, architecture map, deployment
 preflight, and test journals are maintained in the Git-ignored `.local/`
-directory on the development workstation. The application is not ready for
-live trading or production deployment.
+directory on the development workstation. The application can be hosted for
+authenticated paper research, but is not ready for live trading.

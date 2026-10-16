@@ -137,8 +137,7 @@ class ExchangeSymbol(BaseModel):
             or lot.step_size is None
             or lot.min_quantity is None
             or lot.max_quantity is None
-            or price.tick_size <= 0
-            or lot.step_size <= 0
+            or (self.status == "TRADING" and (price.tick_size <= 0 or lot.step_size <= 0))
             or min(
                 price.min_price,
                 price.max_price,
@@ -167,6 +166,8 @@ class ExchangeSymbol(BaseModel):
         return self
 
     def rules(self) -> SymbolRules:
+        if self.status != "TRADING":
+            raise ValueError("symbol is not trading; executable rules unavailable")
         filters = {item.filter_type: item for item in self.filters}
         price = filters["PRICE_FILTER"]
         lot = filters["LOT_SIZE"]
