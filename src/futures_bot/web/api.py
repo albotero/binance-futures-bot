@@ -1,9 +1,11 @@
+import asyncio
 import csv
 import hmac
 import io
 import secrets
 from datetime import timedelta
 from pathlib import Path
+from time import monotonic
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
@@ -17,6 +19,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from futures_bot.backtesting.engine import BacktestConfiguration
+from futures_bot.exchange import BinanceAPIError, BinancePayloadError, BinanceUSDmClient
+from futures_bot.exchange.binance_usdm import ExchangeInformation
 from futures_bot.execution.paper import (
     PaperEvent,
     PaperRun,
@@ -35,6 +39,7 @@ from futures_bot.risk.configuration import (
     RiskConfiguration,
     save_risk_configuration,
 )
+from futures_bot.risk.engine import PLATFORM_MAX_LEVERAGE
 from futures_bot.strategy.configuration import (
     MissingStrategyConfiguration,
     save_strategy_configuration,
@@ -127,6 +132,8 @@ def configure_web(
         not in {"/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"}
     ]
     allowed_hosts = {urlsplit(origin).netloc.lower() for origin in settings.allowed_origins}
+    market_cache: dict[str, tuple[float, ExchangeInformation]] = {}
+    market_lock = asyncio.Lock()
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
@@ -325,6 +332,41 @@ def configure_web(
             COOKIE_NAME, path="/", secure=settings.cookie_secure, httponly=True, samesite="strict"
         )
         return {"authenticated": False}
+
+    @app.get("/api/market/contracts")
+    async def market_contracts(
+        quote_asset: Literal["USDC", "USDT"] = "USDC",
+        environment: Literal["testnet", "production"] = "production",
+    ) -> dict[str, Any]:
+        async with market_lock:
+            cached = market_cache.get(environment)
+            if cached is None or monotonic() - cached[0] >= 60:
+                try:
+                    async with BinanceUSDmClient(environment) as client:
+                        information = await client.exchange_information()
+                except (BinanceAPIError, BinancePayloadError) as exc:
+                    raise HTTPException(
+                        502, "contract list unavailable; retry the public market-data request"
+                    ) from exc
+                cached = (monotonic(), information)
+                market_cache[environment] = cached
+        return {
+            "quote_asset": quote_asset,
+            "environment": environment,
+            "platform_max_leverage": PLATFORM_MAX_LEVERAGE,
+            "exchange_leverage_verified": False,
+            "items": [
+                {
+                    "symbol": item.symbol,
+                    "base_asset": item.base_asset,
+                    "quote_asset": item.quote_asset,
+                    "margin_asset": item.margin_asset,
+                }
+                for item in sorted(
+                    cached[1].tradable_symbols(quote_asset), key=lambda item: item.symbol
+                )
+            ],
+        }
 
     @app.get("/api/config/{kind}")
     def get_configuration(kind: str) -> dict[str, Any]:

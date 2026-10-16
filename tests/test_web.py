@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.pool import StaticPool
 
+from futures_bot.exchange import BinanceAPIError, ExchangeInformation
 from futures_bot.persistence.database import make_session_factory
 from futures_bot.persistence.models import (
     ApplicationConfiguration,
@@ -116,6 +117,7 @@ def test_uninitialized_strategy_provides_all_editable_defaults(web):
         "/api/research/nope/trades.csv",
         "/api/research/nope/validation.json",
         "/api/paper/capabilities",
+        "/api/market/contracts",
     ],
 )
 def test_auth_gates(web, path):
@@ -316,7 +318,7 @@ def test_config_validation_no_credentials_and_no_live_actions(web):
     token = login(client)
     headers = {"Origin": ORIGIN, "X-CSRF-Token": token}
     config = risk_config()
-    config["symbols"][0]["leverage"] = 21
+    config["symbols"][0]["leverage"] = 51
     response = client.put(
         "/api/config/risk",
         headers=headers,
@@ -339,6 +341,153 @@ def test_config_validation_no_credentials_and_no_live_actions(web):
     assert client.get("/api/paper/capabilities").json()["available"] is True
     with factory() as session:
         assert session.get(ApplicationConfiguration, "runtime") is None
+
+
+def test_contract_directory_filters_and_caches_public_metadata(web, monkeypatch):
+    client, _, _ = web
+    requests = []
+    clock = [100.0]
+    monkeypatch.setattr("futures_bot.web.api.monotonic", lambda: clock[0])
+    entries = [
+        ("ETHUSDC", "ETH", "USDC", "USDC", "TRADING", "PERPETUAL"),
+        ("BTCUSDT", "BTC", "USDT", "USDT", "TRADING", "PERPETUAL"),
+        ("BTCUSDC", "BTC", "USDC", "USDC", "TRADING", "PERPETUAL"),
+        ("MISMATCHUSDC", "MISMATCH", "USDC", "USDT", "TRADING", "PERPETUAL"),
+        ("HALTEDUSDC", "HALTED", "USDC", "USDC", "BREAK", "PERPETUAL"),
+        ("DATEDUSDC", "DATED", "USDC", "USDC", "TRADING", "CURRENT_QUARTER"),
+    ]
+    information = ExchangeInformation.model_validate(
+        {
+            "symbols": [
+                {
+                    "symbol": symbol,
+                    "baseAsset": base,
+                    "quoteAsset": quote,
+                    "marginAsset": margin,
+                    "status": status,
+                    "contractType": contract,
+                    "pricePrecision": 2,
+                    "quantityPrecision": 3,
+                    "filters": [
+                        {
+                            "filterType": "PRICE_FILTER",
+                            "minPrice": "0.01",
+                            "maxPrice": "1000000",
+                            "tickSize": "0.01",
+                        },
+                        {
+                            "filterType": "LOT_SIZE",
+                            "minQty": "0.001",
+                            "maxQty": "1000",
+                            "stepSize": "0.001",
+                        },
+                    ],
+                }
+                for symbol, base, quote, margin, status, contract in entries
+            ]
+        }
+    )
+
+    class PublicClient:
+        def __init__(self, environment):
+            requests.append(environment)
+            self.environment = environment
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def exchange_information(self):
+            return (
+                information if self.environment == "production" else ExchangeInformation(symbols=())
+            )
+
+    monkeypatch.setattr("futures_bot.web.api.BinanceUSDmClient", PublicClient)
+    assert client.get("/api/market/contracts").status_code == 401
+    assert requests == []
+    login(client)
+    response = client.get("/api/market/contracts")
+    assert response.status_code == 200
+    result = response.json()
+    assert result["quote_asset"] == "USDC" and result["environment"] == "production"
+    assert result["platform_max_leverage"] == 50
+    assert result["exchange_leverage_verified"] is False
+    assert [item["symbol"] for item in result["items"]] == ["BTCUSDC", "ETHUSDC"]
+    assert result["items"][0]["base_asset"] == "BTC"
+    usdt = client.get("/api/market/contracts?quote_asset=USDT").json()
+    assert [item["symbol"] for item in usdt["items"]] == ["BTCUSDT"]
+    assert requests == ["production"]
+    assert client.get("/api/market/contracts?environment=testnet").json()["items"] == []
+    assert requests == ["production", "testnet"]
+    assert len(client.get("/api/market/contracts").json()["items"]) == 2
+    clock[0] = 160.0
+    client.get("/api/market/contracts")
+    assert requests == ["production", "testnet", "production"]
+    assert client.get("/api/market/contracts?quote_asset=USD").status_code == 422
+    assert client.get("/api/market/contracts?environment=live").status_code == 422
+
+
+def test_contract_directory_reports_outage_without_stale_success(web, monkeypatch):
+    client, _, _ = web
+
+    class UnavailableClient:
+        def __init__(self, environment):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def exchange_information(self):
+            raise BinanceAPIError("sensitive exchange response")
+
+    monkeypatch.setattr("futures_bot.web.api.BinanceUSDmClient", UnavailableClient)
+    login(client)
+    response = client.get("/api/market/contracts")
+    assert response.status_code == 502
+    assert "retry" in response.json()["detail"]
+    assert "sensitive" not in response.text
+
+
+def test_web_accepts_explicit_50x_and_rejects_above_policy_and_platform(web):
+    client, _, _ = web
+    token = login(client)
+    headers = {"Origin": ORIGIN, "X-CSRF-Token": token}
+    config = risk_config()
+    config["policy"]["maximum_leverage"] = 50
+    config["symbols"][0]["leverage"] = 50
+    assert (
+        client.put(
+            "/api/config/risk",
+            headers=headers,
+            json={"expected_version": 0, "configuration": config},
+        ).status_code
+        == 200
+    )
+    assert client.get("/api/config/risk").json()["configuration"]["symbols"][0]["leverage"] == 50
+    config["policy"]["maximum_leverage"] = 49
+    assert (
+        client.put(
+            "/api/config/risk",
+            headers=headers,
+            json={"expected_version": 1, "configuration": config},
+        ).status_code
+        == 422
+    )
+    config["policy"]["maximum_leverage"] = 51
+    config["symbols"][0]["leverage"] = 51
+    assert (
+        client.put(
+            "/api/config/risk",
+            headers=headers,
+            json={"expected_version": 1, "configuration": config},
+        ).status_code
+        == 422
+    )
     response = client.post(
         "/api/auth/login",
         headers=headers,

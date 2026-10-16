@@ -11,7 +11,7 @@ RiskBasis = Literal["available_balance", "equity"]
 Direction = Literal["long", "short"]
 _ZERO = Decimal(0)
 _ONE = Decimal(1)
-_PLATFORM_MAX_LEVERAGE = 20
+PLATFORM_MAX_LEVERAGE = 50
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,7 +89,7 @@ class RiskPolicy:
     maximum_stop_distance_fraction: Decimal
     minimum_reward_to_risk: Decimal
     maximum_open_positions: int
-    maximum_leverage: int = _PLATFORM_MAX_LEVERAGE
+    maximum_leverage: int = 20
     maximum_account_age: timedelta = timedelta(seconds=15)
     maximum_market_age: timedelta = timedelta(seconds=15)
 
@@ -121,9 +121,9 @@ class RiskPolicy:
             raise ValueError("maximum_open_positions must be a positive integer")
         if (
             type(self.maximum_leverage) is not int
-            or not 1 <= self.maximum_leverage <= _PLATFORM_MAX_LEVERAGE
+            or not 1 <= self.maximum_leverage <= PLATFORM_MAX_LEVERAGE
         ):
-            raise ValueError("maximum_leverage must be between 1 and 20")
+            raise ValueError(f"maximum_leverage must be between 1 and {PLATFORM_MAX_LEVERAGE}")
         for name in ("maximum_account_age", "maximum_market_age"):
             age = getattr(self, name)
             if not isinstance(age, timedelta) or age <= timedelta(0):

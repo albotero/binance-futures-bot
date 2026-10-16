@@ -86,10 +86,15 @@ such as the database location and, only if needed in a later phase, secret
 injection. Exchange credentials are never exposed to the browser or saved as
 ordinary strategy configuration.
 
-Leverage is part of risk-controlled configuration, defaults to **1x**, and is
-planned to have a conservative platform cap of **20x** until separately
-reviewed. Leverage changes simulated margin requirements; it must never
-increase the position's configured loss-risk budget.
+Leverage is part of risk-controlled configuration, defaults to **1x**, and has
+a platform ceiling of **50x**. The suggested dashboard policy remains **5x**;
+existing saved limits are never raised automatically. The backend's omitted
+policy-limit default remains 20x for compatibility. Set the portfolio limit
+explicitly before selecting higher per-asset leverage. Leverage changes simulated
+margin requirements, never the configured stop-loss budget. Higher leverage
+increases liquidation risk. The 50x simulation ceiling is not confirmation of a
+contract's actual Binance account/notional leverage bracket; live operation
+would still need verified exchange limits and remains unavailable.
 
 ## Database schema
 
@@ -151,6 +156,31 @@ CSV/JSON results, and paper controls. Suggested settings on a fresh install
 are **not saved or activated** until explicitly submitted. Research calls
 use public production market data and the saved settings, with one request
 at a time per application process and a 30-day range bound.
+
+### Selecting assets
+
+In **Settings → Risk & assets**, choose USDC (default) or USDT, then search
+the contract directory by asset or symbol, for example `BTC`, `ETH`, or `SOL`.
+Add verified perpetual contracts using readable **BTC / USDC** labels instead
+of typing exchange symbols. Already-selected assets cannot be added twice.
+Each new asset starts enabled at 1x. You can disable or remove selections
+and set per-asset leverage before explicitly saving the form.
+
+The directory uses public Binance metadata, includes only trading perpetual
+contracts whose quote **and margin** match the chosen currency, and caches
+metadata per environment for up to 60 seconds. Choose the public production
+directory or testnet directory explicitly; this does not enable real-money
+trading or change a paper run's data environment. Unavailable data is reported
+with a retry control; no invented contracts or alternate quote fallback is used.
+The authenticated endpoint is `GET /api/market/contracts` with optional
+`quote_asset=USDC|USDT` and `environment=production|testnet`.
+
+Switching quote currency requires confirmation and clears only the unsaved
+asset selection so that actual contracts must be selected again. It does not
+rename symbols into potentially nonexistent contracts, edit saved settings
+until submission, or change existing paper-run snapshots. At least one asset
+must be selected to save. Research and paper selectors list only enabled,
+saved assets, with their configured leverage.
 
 ## Persistent paper operation
 
@@ -230,7 +260,7 @@ fetching, API controls, and paper-loop integration remain pending.
 The web-based configuration screen and authenticated API store the required
 risk policy and unique per-symbol settings under `risk` in the versioned
 runtime configuration. Leverage defaults to 1x, must be an integer, and cannot
-exceed the policy cap or the platform's 20x ceiling. Entry evaluation applies
+exceed the policy cap or the platform's 50x ceiling. Entry evaluation applies
 the saved leverage, not a caller's requested override, and still checks the
 exchange limit.
 

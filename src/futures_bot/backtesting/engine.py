@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from futures_bot.exchange import FundingRate, Kline, SymbolRules
 from futures_bot.risk import AccountState, PortfolioState, RiskDecision, RiskRequest, size_position
 from futures_bot.risk.configuration import RiskConfiguration
+from futures_bot.risk.engine import PLATFORM_MAX_LEVERAGE
 from futures_bot.strategy import EntrySetup, StrategyConfiguration, evaluate_pullback
 from futures_bot.strategy.lifecycle import evaluate_entry, evaluate_exit
 from futures_bot.strategy.pullback import STRATEGY_VERSION, _validate_candles
@@ -444,7 +445,7 @@ def _size_entry(
         stop_price=setup.stop_price,
         target_price=setup.target_price,
         leverage=leverage,
-        exchange_max_leverage=20,
+        exchange_max_leverage=PLATFORM_MAX_LEVERAGE,
         symbol_rules=rules,
         market_time=time,
     )

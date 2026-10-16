@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { AssetPicker, assetLabel } from "./AssetPicker";
 import "./style.css";
 
 type Scalar = string | number;
@@ -108,10 +109,10 @@ function App() {
     ]);
     setPaper(capabilities); setPaperRuns(runs.items);
     setSimulation(previous => Object.keys(previous).length ? previous : capabilities.simulation_defaults);
-    if (savedRisk.configuration) {
-      setRisk(savedRisk.configuration);
-      setPaperSymbol(previous => previous || savedRisk.configuration!.symbols.find(s => s.enabled)?.symbol || "");
-    }
+    const saved = savedRisk.configuration;
+    setRisk(saved ?? { ...structuredClone(suggestedRisk), symbols: [] });
+    setPaperSymbol(previous => saved?.symbols.some(s => s.enabled && s.symbol === previous)
+      ? previous : saved?.symbols.find(s => s.enabled)?.symbol ?? "");
   }
 
   async function controlPaper(run: PaperRun, action: string) {
@@ -141,10 +142,10 @@ function App() {
         ]);
         setRuns(results.items);
         setResearchSimulation(previous => Object.keys(previous).length ? previous : capabilities.simulation_defaults);
-        if (savedRisk.configuration) {
-          setRisk(savedRisk.configuration);
-          setResearchSymbol(previous => previous || savedRisk.configuration!.symbols.find(s => s.enabled)?.symbol || "");
-        }
+        const saved = savedRisk.configuration;
+        setRisk(saved ?? { ...structuredClone(suggestedRisk), symbols: [] });
+        setResearchSymbol(previous => saved?.symbols.some(s => s.enabled && s.symbol === previous)
+          ? previous : saved?.symbols.find(s => s.enabled)?.symbol ?? "");
       }
       if (tab === "paper") await loadPaper();
     });
@@ -163,6 +164,7 @@ function App() {
     event.preventDefault();
     if (!settingsLoaded || (kind === "strategy" && Object.keys(strategy).length === 0)) return;
     void attempt(async () => {
+      if (kind === "risk" && risk.symbols.length === 0) throw new Error("Choose at least one asset before saving.");
       await api(`/api/config/${kind}`, "PUT", {
         expected_version: version, configuration: kind === "risk" ? risk : strategy,
       });
@@ -203,27 +205,34 @@ function App() {
         <div className="toolbar"><p>Shared configuration version: <b>{version}</b>. Saving either form reloads both. Stale writes are rejected.</p>
           <button disabled={busy} onClick={() => void attempt(loadSettings)}>Reload settings</button></div>
         <div className="columns">
-          <section><h2>Risk &amp; symbols</h2><p>{!settingsLoaded ? "Loading risk settings…" : initialized.risk ? "Saved configuration" : "Not initialized. These are suggestions only; review every limit before saving."}</p>
+          <section><h2>Risk &amp; assets</h2><p>{!settingsLoaded ? "Loading risk settings…" : initialized.risk ? "Saved configuration" : "Not initialized. These are suggestions only; review every limit before saving."}</p>
             <form onSubmit={event => save(event, "risk")}><fieldset disabled={busy || !settingsLoaded}>
               <label>Quote asset<select value={risk.quote_asset} onChange={e => {
                 const quote = e.target.value as Risk["quote_asset"];
-                setRisk({ ...risk, quote_asset: quote, symbols: risk.symbols.map(s => ({ ...s, symbol: s.symbol.replace(/USDC$|USDT$/, quote) })) });
+                if (risk.symbols.length && !confirm(`Switch to ${quote}? This clears the asset selections in this unsaved form. Choose verified ${quote} contracts; saved settings and existing runs are unchanged until you save.`)) return;
+                setRisk({ ...risk, quote_asset: quote, symbols: [] });
               }}><option>USDC</option><option>USDT</option></select></label>
-              <p>Decimal limits use exact strings. Fractions are 0–1, not percentages. Age fields use ISO 8601 durations (e.g. PT15S). Leverage is capped at 20×.</p>
-              {Object.entries(risk.policy).map(([key, value]) => <label key={key}>{label(key)}
+              <p>Decimal limits use exact strings. Fractions are 0–1, not percentages. Age fields use ISO 8601 durations (e.g. PT15S). The platform supports up to 50×, but your policy limit still applies. Higher leverage increases liquidation risk; it never increases the stop-loss budget. Public metadata does not verify account-specific Binance leverage brackets.</p>
+              {Object.entries(risk.policy).map(([key, value]) => <label key={key}>{key === "maximum_leverage" ? "Portfolio leverage limit (×)" : label(key)}
                 {key === "basis" ? <select value={value} onChange={e => setRisk({ ...risk, policy: { ...risk.policy, [key]: e.target.value } })}>
                   <option value="available_balance">available balance</option><option value="equity">equity</option>
                 </select> : <input required type={typeof value === "number" ? "number" : "text"} step="1"
+                  min={key === "maximum_leverage" ? 1 : undefined} max={key === "maximum_leverage" ? 50 : undefined}
                   value={value} onChange={e => setRisk({ ...risk, policy: { ...risk.policy, [key]: typeof value === "number" ? Number(e.target.value) : e.target.value } })} />}
               </label>)}
-              <h3>Per-symbol leverage</h3>{risk.symbols.map((s, index) => <div className="symbol" key={index}>
-                <label>Symbol<input required aria-label={`Symbol ${index + 1}`} value={s.symbol} onChange={e => changeSymbol(index, { symbol: e.target.value.toUpperCase() })} /></label>
-                <label>Leverage<input type="number" required min={1} max={20} step={1} value={s.leverage} onChange={e => changeSymbol(index, { leverage: Number(e.target.value) })} /></label>
+              <AssetPicker quote={risk.quote_asset} selected={risk.symbols.map(s => s.symbol)} onAdd={symbol => setRisk(previous =>
+                previous.symbols.some(item => item.symbol === symbol) ? previous : { ...previous, symbols: [...previous.symbols, { symbol, leverage: 1, enabled: true }] }
+              )} />
+              <h3>Selected assets ({risk.symbols.length})</h3>
+              <p>Enable an asset to make it available for new research and paper runs. Set its leverage at or below your portfolio limit. Existing run snapshots do not change.</p>
+              {risk.symbols.length === 0 && <p>Select at least one asset from the directory above.</p>}
+              {risk.symbols.map((s, index) => <div className="symbol" key={s.symbol}>
+                <div><strong>{assetLabel(s.symbol, risk.quote_asset)}</strong><small>{s.symbol} · Perpetual</small></div>
+                <label>Trade leverage (×)<input aria-label={`Leverage for ${s.symbol}`} type="number" required min={1} max={Math.min(50, Number(risk.policy.maximum_leverage))} step={1} value={s.leverage} onChange={e => changeSymbol(index, { leverage: Number(e.target.value) })} /></label>
                 <label className="check"><input type="checkbox" checked={s.enabled} onChange={e => changeSymbol(index, { enabled: e.target.checked })} />Enabled</label>
-                <button type="button" disabled={risk.symbols.length === 1} onClick={() => setRisk({ ...risk, symbols: risk.symbols.filter((_, i) => i !== index) })}>Remove</button>
+                <button type="button" aria-label={`Remove ${assetLabel(s.symbol, risk.quote_asset)}`} onClick={() => setRisk({ ...risk, symbols: risk.symbols.filter((_, i) => i !== index) })}>Remove</button>
               </div>)}
-              <button type="button" onClick={() => setRisk({ ...risk, symbols: [...risk.symbols, { symbol: `ETH${risk.quote_asset}`, enabled: false, leverage: 1 }] })}>Add symbol</button>
-              <button type="submit">Save risk settings</button>
+              <button type="submit" disabled={risk.symbols.length === 0}>Save risk settings</button>
             </fieldset></form>
           </section>
           <section><h2>Strategy parameters</h2><p>{!settingsLoaded ? "Loading strategy settings and implementation defaults…" : initialized.strategy ? "Saved configuration" : "Not initialized. Implementation defaults shown; save explicitly to initialize."}</p>
@@ -243,6 +252,7 @@ function App() {
         </tbody></table></div>}
       </section>}
       {tab === "research" && <section><h2>Research runs</h2>
+        {!risk.symbols.some(s => s.enabled) && <p>No saved enabled assets. Review and save assets in Settings before starting research.</p>}
         <details><summary>Run public-data research</summary><p>Uses saved risk and strategy snapshots with public production market data. No exchange orders or setting promotion. Range: 15 minutes–30 days; timestamps must be UTC ISO values aligned to 15-minute opens. This may take several minutes; leave this page open while it runs.</p>
           <form onSubmit={e => { e.preventDefault(); void attempt(async () => {
             const result = await api<{ id: string; result: unknown }>("/api/research/run", "POST", {
@@ -255,7 +265,7 @@ function App() {
           }); }}><fieldset disabled={busy}>
             <label>Enabled saved symbol<select required value={researchSymbol} onChange={e => setResearchSymbol(e.target.value)}>
               <option value="">Select saved enabled symbol</option>
-              {risk.symbols.filter(s => s.enabled).map(s => <option key={s.symbol}>{s.symbol}</option>)}
+              {risk.symbols.filter(s => s.enabled).map(s => <option key={s.symbol} value={s.symbol}>{assetLabel(s.symbol, risk.quote_asset)} · {s.leverage}×</option>)}
             </select></label>
             <label>Start (UTC ISO timestamp)<input required value={researchStart} onChange={e => setResearchStart(e.target.value)} /></label>
             <label>End (exclusive UTC ISO timestamp)<input required value={researchEnd} onChange={e => setResearchEnd(e.target.value)} /></label>
@@ -285,6 +295,7 @@ function App() {
         })}>Refresh</button>
       </div>}
       {tab === "paper" && <section><h2>Paper engine</h2>
+        {!risk.symbols.some(s => s.enabled) && <p>No saved enabled assets. Review and save assets in Settings before creating a run.</p>}
         <p>{paper?.note}</p><p>Only persisted simulation state is displayed. Production below means public production <em>market data</em>, never live orders. A separate worker must be running for progress.</p>
         <button disabled={busy} onClick={() => void attempt(loadPaper)}>Refresh paper state</button>
         <div className="columns"><article><h3>Create paused paper run</h3><p>Requires saved strategy and risk settings. A run snapshots both; later setting changes do not affect it. Only one active paper portfolio is allowed.</p>
@@ -294,7 +305,7 @@ function App() {
           }); }}><fieldset disabled={busy || !paper?.available}>
             <label>Enabled symbol<select value={paperSymbol} required onChange={e => setPaperSymbol(e.target.value)}>
               <option value="">Select saved enabled symbol</option>
-              {risk.symbols.filter(s => s.enabled).map(s => <option key={s.symbol}>{s.symbol}</option>)}
+              {risk.symbols.filter(s => s.enabled).map(s => <option key={s.symbol} value={s.symbol}>{assetLabel(s.symbol, risk.quote_asset)} · {s.leverage}×</option>)}
             </select></label>
             <label>Market data environment<select value={paperEnvironment} onChange={e => setPaperEnvironment(e.target.value)}>
               <option value="testnet">Testnet market data</option><option value="production">Production public market data (paper only)</option>

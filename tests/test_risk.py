@@ -111,6 +111,37 @@ def test_size_is_decimal_step_aligned_and_leverage_does_not_raise_risk() -> None
     assert five_x.margin_required == Decimal("1000")
 
 
+def test_50x_requires_explicit_policy_and_exchange_permission_without_increasing_risk():
+    baseline = size_position(request(), account(), portfolio(), policy(), now=NOW)
+    high = size_position(
+        request(leverage=50, exchange_max_leverage=50),
+        account(),
+        portfolio(),
+        policy(maximum_leverage=50),
+        now=NOW,
+    )
+    assert high.accepted and baseline.accepted
+    assert high.quantity == baseline.quantity
+    assert high.estimated_stop_loss == baseline.estimated_stop_loss
+    assert high.margin_required == baseline.margin_required / 50
+    assert not size_position(
+        request(leverage=50, exchange_max_leverage=25),
+        account(),
+        portfolio(),
+        policy(maximum_leverage=50),
+        now=NOW,
+    ).accepted
+    assert not size_position(
+        request(leverage=50, exchange_max_leverage=50),
+        account(),
+        portfolio(),
+        policy(),
+        now=NOW,
+    ).accepted
+    with pytest.raises(ValueError, match="between 1 and 50"):
+        policy(maximum_leverage=51)
+
+
 def test_short_position_uses_mirrored_stop_and_target_distances() -> None:
     result = size_position(
         request(

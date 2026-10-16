@@ -224,6 +224,18 @@ def test_risk_rejections_are_exposed_and_do_not_create_trades(history, rules, ri
     assert result.net_pnl == 0
 
 
+def test_simulation_supports_50x_without_enlarging_position_risk(history, rules, risk):
+    baseline = simulate(history, rules, risk)
+    high_risk = RiskConfiguration(
+        policy=replace(risk.policy, maximum_leverage=50),
+        symbols=(SymbolConfiguration(symbol="BTCUSDC", leverage=50),),
+    )
+    high = simulate(history, rules, high_risk)
+    assert high.trades and baseline.trades
+    assert high.trades[0].quantity == baseline.trades[0].quantity
+    assert not any("leverage" in str(item).lower() for item in high.risk_rejections)
+
+
 def test_decimal_context_does_not_change_research_results(history, rules, risk) -> None:
     baseline = simulate(history, rules, risk)
     with localcontext() as context:

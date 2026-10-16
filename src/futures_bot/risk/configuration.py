@@ -24,7 +24,7 @@ from futures_bot.persistence.repositories import (
     ConfigurationConflict,
     save_application_configuration,
 )
-from futures_bot.risk.engine import RiskPolicy
+from futures_bot.risk.engine import PLATFORM_MAX_LEVERAGE, RiskPolicy
 
 _DECIMAL_FIELDS = frozenset(
     {
@@ -50,7 +50,7 @@ class SymbolConfiguration(BaseModel):
 
     symbol: str
     enabled: StrictBool = True
-    leverage: Annotated[StrictInt, Field(ge=1, le=20)] = 1
+    leverage: Annotated[StrictInt, Field(ge=1, le=PLATFORM_MAX_LEVERAGE)] = 1
 
     @field_validator("symbol")
     @classmethod
