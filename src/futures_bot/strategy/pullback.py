@@ -196,7 +196,7 @@ def evaluate_pullback(
     identity = f"{STRATEGY_VERSION}:{checksum}:{symbol}:{direction}:{last.close_time.isoformat()}"
     return StrategyEvaluation(
         setup=EntrySetup(
-            id=hashlib.sha256(identity.encode("ascii")).hexdigest(),
+            id=hashlib.sha256(identity.encode("utf-8")).hexdigest(),
             symbol=symbol,
             direction=direction,
             strategy_version=STRATEGY_VERSION,

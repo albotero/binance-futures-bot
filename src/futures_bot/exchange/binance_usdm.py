@@ -117,7 +117,7 @@ class ExchangeSymbol(BaseModel):
     @field_validator("symbol")
     @classmethod
     def validate_symbol(cls, value: str) -> str:
-        _validate_symbol(value)
+        validate_symbol_name(value)
         return value
 
     @model_validator(mode="after")
@@ -371,7 +371,7 @@ class BinanceUSDmClient:
         end_time: int | None = None,
         limit: int = 500,
     ) -> tuple[Kline, ...]:
-        _validate_symbol(symbol)
+        validate_symbol_name(symbol)
         if not isinstance(interval, str) or interval not in _KLINE_INTERVALS:
             raise ValueError("unsupported kline interval")
         _validate_time_range(start_time, end_time)
@@ -402,7 +402,7 @@ class BinanceUSDmClient:
         limit: int = 100,
     ) -> tuple[FundingRate, ...]:
         if symbol is not None:
-            _validate_symbol(symbol)
+            validate_symbol_name(symbol)
         _validate_time_range(start_time, end_time)
         _validate_limit(limit, 1000, "funding-rate")
 
@@ -425,7 +425,7 @@ class BinanceUSDmClient:
         symbol: str | None = None,
     ) -> tuple[SymbolPriceTicker, ...]:
         if symbol is not None:
-            _validate_symbol(symbol)
+            validate_symbol_name(symbol)
 
         params: dict[str, str | int] | None = {"symbol": symbol} if symbol is not None else None
         payload = await self._get("/fapi/v2/ticker/price", params)
@@ -440,7 +440,7 @@ class BinanceUSDmClient:
 
     async def mark_prices(self, symbol: str | None = None) -> tuple[MarkPrice, ...]:
         if symbol is not None:
-            _validate_symbol(symbol)
+            validate_symbol_name(symbol)
 
         params: dict[str, str | int] | None = {"symbol": symbol} if symbol is not None else None
         payload = await self._get("/fapi/v1/premiumIndex", params)
@@ -506,15 +506,14 @@ class BinanceUSDmClient:
         return min(self._backoff_seconds * (2**attempt), _MAX_RETRY_DELAY_SECONDS)
 
 
-def _validate_symbol(symbol: str) -> None:
+def validate_symbol_name(symbol: str) -> None:
     if (
         not isinstance(symbol, str)
         or len(symbol) < 2
         or len(symbol) > 32
-        or not symbol.isascii()
         or not all(character.isalnum() or character == "_" for character in symbol)
     ):
-        raise ValueError("symbol must contain only ASCII letters, digits, or underscores")
+        raise ValueError("symbol must contain 2-32 letters, digits, or underscores")
     if symbol != symbol.upper():
         raise ValueError("symbol must be uppercase")
 
@@ -610,7 +609,7 @@ def _parse_funding_rate(item: object) -> FundingRate:
     if not isinstance(symbol, str):
         raise BinancePayloadError("invalid funding-rate symbol in exchange response")
     try:
-        _validate_symbol(symbol)
+        validate_symbol_name(symbol)
     except ValueError as exc:
         raise BinancePayloadError("invalid funding-rate symbol in exchange response") from exc
     rate = _decimal(item.get("fundingRate"), "funding rate")
@@ -674,7 +673,7 @@ def _response_symbol(value: object, endpoint: str) -> str:
     if not isinstance(value, str):
         raise BinancePayloadError(f"invalid {endpoint} symbol in exchange response")
     try:
-        _validate_symbol(value)
+        validate_symbol_name(value)
     except ValueError as exc:
         raise BinancePayloadError(f"invalid {endpoint} symbol in exchange response") from exc
     return value

@@ -18,6 +18,7 @@ from pydantic import (
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from futures_bot.exchange.binance_usdm import validate_symbol_name
 from futures_bot.persistence.models import ApplicationConfiguration
 from futures_bot.persistence.repositories import (
     ConfigurationConflict,
@@ -54,13 +55,7 @@ class SymbolConfiguration(BaseModel):
     @field_validator("symbol")
     @classmethod
     def validate_symbol(cls, value: str) -> str:
-        if (
-            not 2 <= len(value) <= 32
-            or not value.isascii()
-            or value != value.upper()
-            or not all(character.isalnum() or character == "_" for character in value)
-        ):
-            raise ValueError("symbol must be uppercase ASCII letters, digits, or underscores")
+        validate_symbol_name(value)
         return value
 
 

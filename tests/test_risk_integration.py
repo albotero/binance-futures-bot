@@ -33,6 +33,17 @@ from futures_bot.risk.service import evaluate_configured_entry
 NOW = datetime(2026, 10, 16, 1, tzinfo=UTC)
 
 
+def test_unicode_symbols_are_consistent_across_settings_and_risk_requests(
+    settings: RiskConfiguration, entry: RiskRequest
+) -> None:
+    symbol = "\u5e01\u5b89\u4eba\u751fUSDT"
+    configuration = RiskConfiguration(
+        quote_asset="USDT", policy=settings.policy, symbols=(SymbolConfiguration(symbol=symbol),)
+    )
+    request = replace(entry, symbol=symbol, symbol_rules=replace(entry.symbol_rules, symbol=symbol))
+    assert configuration.symbols[0].symbol == request.symbol == symbol
+
+
 @pytest.fixture
 def session(tmp_path) -> Iterator[Session]:
     engine = make_engine(f"sqlite:///{tmp_path / 'risk.sqlite3'}")

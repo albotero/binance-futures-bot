@@ -113,9 +113,11 @@ Responses are validated and normalized to UTC timestamps and `Decimal` values;
 requests use bounded concurrency, bounded retries, and sanitized errors.
 
 Historical candles can be fetched in bounded pages, checked for gaps, and
-stored in the SQLite cache. The data services are not yet orchestrated by the
-API, dashboard, backtester, or paper-execution loop. Unit tests use mocked HTTP
-responses and never call Binance.
+stored in the SQLite cache. Offline backtests accept normalized candle and
+funding series; API, dashboard, and paper-loop orchestration remain pending.
+Symbol validation accepts Unicode letters used by current Binance listings,
+while still rejecting separators, control characters, and lowercase symbols.
+Unit tests use mocked HTTP responses and never call Binance.
 
 ## Risk-sizing status
 
@@ -132,8 +134,8 @@ returns the configuration version, snapshot ID, applied leverage, and risk
 decision. Missing/invalid settings or missing account state fail explicitly;
 stale snapshots reject the entry. Account snapshots are stored independently
 for simulated, testnet, and production environments, with no cross-environment
-fallback. Exchange account fetching, strategy, API, backtester, and paper-loop
-integration are still pending.
+fallback. The offline backtester uses this same risk engine. Exchange account
+fetching, API controls, and paper-loop integration remain pending.
 
 ## Operator configuration
 
@@ -189,6 +191,32 @@ implementation version and configuration checksum. Incomplete candles cannot
 produce setups, indicator warm-up is required, and missing historical bars
 raise explicit errors. This is a research baseline, not evidence of a trading
 edge, and is not yet connected to an automated execution loop.
+
+## Offline historical research
+
+`futures_bot.backtesting.run_backtest` simulates one enabled symbol with at
+most one pending setup and one open position. It uses the shared closed-bar
+strategy, trigger/exit rules, saved leverage, and central risk checks.
+Provide complete ordered 1h/15m histories with warm-up, historical funding,
+exchange rules, explicit risk limits, and exact-decimal simulation assumptions.
+The function makes no network requests. Missing or inconsistent histories
+raise errors; denied entries include risk rejection reasons.
+
+Results include a dataset checksum, engine/strategy versions, configuration
+snapshot, trade ledger, equity curve, net fees/funding, drawdown, win rate,
+profit factor, and expectancy. JSON serialization preserves decimal strings;
+`backtesting.results` provides audited transactional result storage and CSV
+trade export. Results are not automatically promoted into trading settings.
+
+Important limitations: execution timestamps are bar bounds, price slippage
+is adverse, stop/target ambiguity is stop-first, and uncertain intrabar
+funding charges debits but omits credits. Liquidation is a conservative
+adverse-extreme stress test using explicit maintenance/fee assumptions, not
+Binance bracket-accurate liquidation. Exchange rules are static over a run.
+An empty funding series explicitly models zero funding, not verified coverage.
+Gaps, costs, and slippage can exceed gross risk estimates or invalidate the
+required reward-to-risk ratio. Multi-symbol allocation, walk-forward
+validation, optimization, and dashboard orchestration are not implemented yet.
 
 ## Roadmap
 

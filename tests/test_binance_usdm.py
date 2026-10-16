@@ -71,14 +71,15 @@ def test_client_rejects_unbounded_configuration(
         create_client()
 
 
-def test_exchange_information_validates_public_symbol_metadata() -> None:
+@pytest.mark.parametrize("symbol", ["BTCUSDT", "\u5e01\u5b89\u4eba\u751fUSDT"])
+def test_exchange_information_validates_public_symbol_metadata(symbol: str) -> None:
     async def handler(_: httpx2.Request) -> httpx2.Response:
         return httpx2.Response(
             200,
             json={
                 "symbols": [
                     {
-                        "symbol": "BTCUSDT",
+                        "symbol": symbol,
                         "status": "TRADING",
                         "contractType": "PERPETUAL",
                         "baseAsset": "BTC",
@@ -117,7 +118,7 @@ def test_exchange_information_validates_public_symbol_metadata() -> None:
         lambda client: client.exchange_information(),
     )
 
-    assert information.symbols[0].symbol == "BTCUSDT"
+    assert information.symbols[0].symbol == symbol
     assert information.symbols[0].contract_type == "PERPETUAL"
     assert information.symbols[0].quantity_precision == 3
     rules = information.symbols[0].rules()
@@ -164,10 +165,36 @@ def test_symbol_discovery_defaults_to_usdc_using_exchange_metadata() -> None:
             metadata("BTCUSDT", "USDT", "USDT"),
             metadata("ETHUSDC", "USDC", "USDT"),
             metadata("SOLUSDC", "USDC", "USDC", "SETTLING"),
+            metadata("\u5e01\u5b89\u4eba\u751fUSDT", "USDT", "USDT"),
         )
     )
     assert [symbol.symbol for symbol in information.tradable_symbols()] == ["BTCUSDC"]
-    assert [symbol.symbol for symbol in information.tradable_symbols("USDT")] == ["BTCUSDT"]
+    assert [symbol.symbol for symbol in information.tradable_symbols("USDT")] == [
+        "BTCUSDT",
+        "\u5e01\u5b89\u4eba\u751fUSDT",
+    ]
+
+
+def test_unicode_symbol_queries_are_encoded_without_changing_identity() -> None:
+    symbol = "\u5e01\u5b89\u4eba\u751fUSDT"
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.params["symbol"] == symbol
+        return httpx2.Response(200, json={"symbol": symbol, "price": "1.23"})
+
+    tickers = run_client(
+        BinanceUSDmClient(transport=httpx2.MockTransport(handler)),
+        lambda client: client.symbol_price_tickers(symbol),
+    )
+    assert tickers[0].symbol == symbol
+
+
+@pytest.mark.parametrize("symbol", ["BTC/USDT", "BTC&USDT", "BTC\nUSDT", "btcusdt", "=BTCUSDT"])
+def test_symbol_validation_still_rejects_unsafe_or_lowercase_names(symbol: str) -> None:
+    from futures_bot.exchange.binance_usdm import validate_symbol_name
+
+    with pytest.raises(ValueError):
+        validate_symbol_name(symbol)
 
 
 def test_clock_skew_rejects_a_local_clock_outside_tolerance() -> None:

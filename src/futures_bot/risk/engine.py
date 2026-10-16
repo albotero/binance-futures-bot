@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import ROUND_FLOOR, Decimal
 from typing import Literal
 
-from futures_bot.exchange.binance_usdm import SymbolRules
+from futures_bot.exchange.binance_usdm import SymbolRules, validate_symbol_name
 
 RiskBasis = Literal["available_balance", "equity"]
 Direction = Literal["long", "short"]
@@ -143,14 +143,7 @@ class RiskRequest:
     target_price: Decimal | None = None
 
     def __post_init__(self) -> None:
-        if (
-            not isinstance(self.symbol, str)
-            or not 2 <= len(self.symbol) <= 32
-            or not self.symbol.isascii()
-            or self.symbol != self.symbol.upper()
-            or not all(character.isalnum() or character == "_" for character in self.symbol)
-        ):
-            raise ValueError("symbol must be uppercase ASCII letters, digits, or underscores")
+        validate_symbol_name(self.symbol)
         if self.direction not in ("long", "short"):
             raise ValueError("direction must be long or short")
         _require_decimal(self.entry_price, "entry_price")

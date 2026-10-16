@@ -211,6 +211,19 @@ def test_configuration_changes_have_distinct_setup_identity(rules: SymbolRules) 
     assert first.setup.configuration_checksum != second.setup.configuration_checksum
 
 
+def test_unicode_symbol_has_a_stable_strategy_identity(rules: SymbolRules) -> None:
+    symbol = "\u5e01\u5b89\u4eba\u751fUSDT"
+    rules = replace(rules, symbol=symbol)
+    hourly, entries = histories()
+    first = evaluate_pullback(symbol, hourly, entries, rules, StrategyConfiguration(), as_of=AS_OF)
+    assert first.setup is not None
+    assert first.setup.symbol == symbol
+    assert len(first.setup.id) == 64
+    assert first == evaluate_pullback(
+        symbol, hourly, entries, rules, StrategyConfiguration(), as_of=AS_OF
+    )
+
+
 @pytest.mark.parametrize(
     "values",
     [
