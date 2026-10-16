@@ -170,6 +170,24 @@ are **not saved or activated** until explicitly submitted. Research calls
 use public production market data and the saved settings, with one request
 at a time per application process and a 30-day range bound.
 
+### Reading research results
+
+**Research → Saved research** shows performance cards with net PNL and return,
+maximum drawdown, win rate, completed trade count, profit factor, symbol and
+UTC test range. **Inspect results** opens an equity chart, final balance,
+fees, funding, expectancy and a ten-row paginated trade ledger with structural
+SL/TP and exit reasons. Strategy/risk diagnostics, model limitations and the
+full immutable JSON/configuration snapshot remain available in expandable
+sections. Missing historical metrics are labeled as unrecorded, not zero.
+
+**Trades CSV** remains available on every card and **Download trades CSV**
+in the selected result. For walk-forward searches, displayed performance and
+CSV both refer to the selected holdout, or the baseline holdout when no
+candidate was selected; they are not combined development results.
+**Validation JSON** retains the complete candidate/validation evidence.
+The chart displays bar-boundary equity, not intrabar drawdown. All results
+are historical simulations, not evidence of future profitability.
+
 ### Selecting assets
 
 In **Settings → Risk & assets**, choose USDC (default) or USDT, then search

@@ -676,6 +676,93 @@ def test_research_exports_and_redaction(web):
     assert client.get("/api/research/missing").status_code == 404
 
 
+@pytest.mark.parametrize("scope", ["backtest", "selected_holdout", "baseline_holdout"])
+def test_research_list_includes_bounded_exact_performance_summary(web, scope):
+    client, factory, _ = web
+    performance = {
+        "symbol": "BTCUSDC",
+        "quote_asset": "USDC",
+        "net_pnl": "-12.34567890",
+        "starting_balance": "1000",
+        "final_equity": "987.65432110",
+        "maximum_drawdown_fraction": "0.025",
+        "win_rate": "0.5",
+        "profit_factor": "0.75",
+        "total_fees": "1.23",
+        "funding_pnl": "-0.1",
+        "start": "2026-10-01T16:00:00+00:00",
+        "end": "2026-10-16T16:00:00+00:00",
+        "halted": True,
+        "trades": [{"symbol": "BTCUSDC"}, {"symbol": "BTCUSDC"}],
+        "equity_curve": [{"equity": "1000"}],
+        "api_key": "must-not-leak",
+    }
+    validation = scope != "backtest"
+    metrics = (
+        {scope: performance, "candidates": [{"net_pnl": "999999"}]} if validation else performance
+    )
+    if scope == "baseline_holdout":
+        metrics["selected_holdout"] = None
+    elif scope == "selected_holdout":
+        metrics["baseline_holdout"] = {"net_pnl": "-999", "trades": []}
+    with factory.begin() as session:
+        session.add(
+            BacktestRun(
+                id="summary-run",
+                status="completed",
+                strategy_version="test",
+                dataset_metadata={"kind": "walk_forward_search"} if validation else {},
+                configuration_snapshot={},
+                metrics=metrics,
+            )
+        )
+    login(client)
+    response = client.get("/api/research?limit=1")
+    assert response.status_code == 200
+    summary = response.json()["items"][0]["summary"]
+    assert summary["scope"] == scope
+    assert summary["trade_count"] == 2
+    for key in (
+        "net_pnl",
+        "starting_balance",
+        "final_equity",
+        "maximum_drawdown_fraction",
+        "win_rate",
+        "profit_factor",
+        "total_fees",
+        "funding_pnl",
+        "halted",
+    ):
+        assert summary[key] == performance[key]
+    assert all(key not in summary for key in ("trades", "equity_curve", "candidates", "api_key"))
+    assert "must-not-leak" not in response.text
+
+
+@pytest.mark.parametrize(
+    "metrics", [None, {}, {"trades": [], "net_pnl": "0", "profit_factor": None}]
+)
+def test_research_summary_does_not_invent_missing_or_zero_trade_metrics(web, metrics):
+    client, factory, _ = web
+    with factory.begin() as session:
+        session.add(
+            BacktestRun(
+                id="legacy-run",
+                status="completed",
+                strategy_version="old",
+                dataset_metadata={},
+                configuration_snapshot={},
+                metrics=metrics,
+            )
+        )
+    login(client)
+    summary = client.get("/api/research").json()["items"][0]["summary"]
+    assert summary["trade_count"] == (0 if metrics and "trades" in metrics else None)
+    if metrics and "net_pnl" in metrics:
+        assert summary["net_pnl"] == "0" and summary["profit_factor"] is None
+    else:
+        assert "net_pnl" not in summary and "profit_factor" not in summary
+
+
 def test_static_dist_no_traversal_or_public_docs(web):
     client, factory, _ = web
     root = Path(__file__).resolve().parents[1] / "frontend" / "dist"

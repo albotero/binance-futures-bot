@@ -120,6 +120,35 @@ def _csv(rows: list[dict[str, Any]], fields: list[str]) -> Response:
     )
 
 
+def _research_summary(metrics: dict[str, Any] | None, *, validation: bool) -> dict[str, Any]:
+    values = metrics or {}
+    scope = "backtest"
+    if validation:
+        scope = "selected_holdout" if values.get("selected_holdout") else "baseline_holdout"
+        values = values.get(scope) or {}
+    fields = (
+        "symbol",
+        "quote_asset",
+        "start",
+        "end",
+        "starting_balance",
+        "final_equity",
+        "net_pnl",
+        "total_fees",
+        "funding_pnl",
+        "maximum_drawdown_fraction",
+        "win_rate",
+        "profit_factor",
+        "expectancy",
+        "halted",
+    )
+    return {
+        **{key: values[key] for key in fields if key in values},
+        "scope": scope,
+        "trade_count": len(values["trades"]) if isinstance(values.get("trades"), list) else None,
+    }
+
+
 def configure_web(
     app: FastAPI,
     session_factory: sessionmaker[Session],
@@ -489,6 +518,10 @@ def configure_web(
                         "strategy_version": row.strategy_version,
                         "status": row.status,
                         "dataset_metadata": _redact(row.dataset_metadata),
+                        "summary": _research_summary(
+                            row.metrics,
+                            validation=row.dataset_metadata.get("kind") == "walk_forward_search",
+                        ),
                         "created_at": row.created_at.isoformat(),
                     }
                     for row in rows

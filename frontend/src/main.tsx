@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { AssetPicker, assetLabel } from "./AssetPicker";
+import { ResearchResults, type ResearchDetail as Detail, type ResearchRun as Run } from "./ResearchResults";
 import "./style.css";
 
 type Scalar = string | number;
@@ -13,8 +14,6 @@ type Risk = { quote_asset: "USDC" | "USDT"; policy: Record<string, Scalar>; symb
 type Config<T> = { version: number; configuration: T | null; defaults: T | null };
 type Auth = { authenticated: boolean; username: string | null; csrf_token: string; expires_at: string };
 type Audit = { id: string; actor: string; action: string; created_at: string; details: unknown };
-type Run = { id: string; status: string; created_at: string; dataset_metadata: Record<string, unknown> };
-type Detail = { id: string; metrics: { strategy_observations?: Record<string, number>; trades?: unknown[]; risk_rejections?: unknown[] }; configuration_snapshot: unknown; dataset_metadata: Record<string, unknown> };
 type PaperRun = { id: string; version: number; status: string; symbol: string; state: Record<string, unknown>; configuration: unknown; updated_at: string };
 type PaperCapabilities = { available: boolean; note: string; simulation_defaults: Record<string, string> };
 
@@ -319,19 +318,9 @@ function App() {
         </details>
         <p>Position quantity uses your saved account-risk fraction divided by modeled loss per unit at SL, including both trading fees and expected adverse stop slippage by default. Notional, margin and Binance limits can reduce actual risk below the requested percentage; entry sizing details are recorded in each new trade. Gaps, liquidation and funding can exceed the estimate.</p>
         <p>Persisted results below are read-only. CSV exports include holdout trades for validation runs.</p>
-        {runs.length === 0 ? <p>No research runs on this page.</p> : <div className="scroll"><table><thead><tr><th>Created</th><th>Status</th><th>Dataset</th><th>Results</th></tr></thead><tbody>
-          {runs.map(run => <tr key={run.id}><td>{run.created_at}</td><td>{run.status}</td><td><pre>{JSON.stringify(run.dataset_metadata, null, 2)}</pre></td><td>
-            <button disabled={busy} onClick={() => void attempt(async () => setDetail(await api<Detail>(`/api/research/${encodeURIComponent(run.id)}`)))}>Inspect</button>
-            <a href={`/api/research/${encodeURIComponent(run.id)}/trades.csv`}>Trades CSV</a>
-            {run.dataset_metadata.kind === "walk_forward_search" && <a href={`/api/research/${encodeURIComponent(run.id)}/validation.json`}>Validation JSON</a>}
-          </td></tr>)}
-        </tbody></table></div>}
-        {detail && <article><h3>Run {detail.id}</h3><button onClick={() => setDetail(null)}>Close result</button>
-          {detail.metrics.trades && <p>{detail.metrics.trades.length} completed trades · {detail.metrics.risk_rejections?.length ?? 0} rejected entry attempts. A completed run may legitimately have no trades.</p>}
-          {detail.metrics.strategy_observations && <><h4>Strategy evaluation reasons</h4><p>Counts are evaluated flat-position bars, not unique trades or all candles. Pending setups may span several bars.</p><ul>
-            {Object.entries(detail.metrics.strategy_observations).map(([reason, count]) => <li key={reason}>{reason}: {count}</li>)}
-          </ul></>}
-          <pre>{JSON.stringify(detail, null, 2)}</pre></article>}
+        <ResearchResults runs={runs} detail={detail} busy={busy}
+          inspect={id => void attempt(async () => setDetail(await api<Detail>(`/api/research/${encodeURIComponent(id)}`)))}
+          close={() => setDetail(null)} />
       </section>}
       {(tab === "audit" || tab === "research") && <div className="toolbar">
         <button disabled={busy || offset === 0} onClick={() => setOffset(Math.max(0, offset - 100))}>Previous</button>
