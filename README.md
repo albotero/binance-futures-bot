@@ -9,8 +9,8 @@ shared strategy and risk components.
 
 - The initial service exposes only a read-only liveness endpoint.
 - Trading mode is restricted to `backtest` or `paper`.
-- Live execution, exchange credentials, authentication, and database-backed
-  state are not implemented yet.
+- Live execution, exchange credentials, authentication, and automated trading
+  loops are not implemented yet.
 - Do not run this foundation as a trading bot or treat `/health` as readiness.
 - No profitability or deployment claims are made.
 
@@ -121,16 +121,36 @@ platform/exchange leverage ceilings. Quantity is rounded down to exchange
 increments, and leverage changes required margin only; it does not increase
 the risk budget. Estimated stop loss is a gross price-distance estimate and
 does not guarantee realized loss under slippage, gaps, fees, or liquidation.
-The risk engine is not yet connected to an account service, strategy, API,
-backtester, or paper-execution loop.
+The configured entry evaluator loads versioned risk settings and the latest
+normalized account snapshot for the explicitly selected environment. It
+returns the configuration version, snapshot ID, applied leverage, and risk
+decision. Missing/invalid settings or missing account state fail explicitly;
+stale snapshots reject the entry. Account snapshots are stored independently
+for simulated, testnet, and production environments, with no cross-environment
+fallback. Exchange account fetching, strategy, API, backtester, and paper-loop
+integration are still pending.
 
 ## Operator configuration
 
 The web-based configuration screen and its authenticated API are planned and
-not yet implemented. Risk, symbol, strategy, and leverage settings are stored
-as versioned, audited database configuration; do not treat editing `.env` as
-the supported operator UI. The service still has no authentication or
-state-changing configuration endpoint.
+not yet implemented. The typed backend risk configuration stores the required
+risk policy and unique per-symbol settings under `risk` in the versioned
+runtime configuration. Leverage defaults to 1x, must be an integer, and cannot
+exceed the policy cap or the platform's 20x ceiling. Entry evaluation applies
+the saved leverage, not a caller's requested override, and still checks the
+exchange limit.
+
+The backend configuration repository requires the expected runtime version
+and saves its audit event in the same transaction. It preserves unrelated
+runtime fields and rejects stale updates. Money and fractional values are
+serialized as exact decimal strings (for example, `"0.01"` means 1% risk);
+JSON floating-point policy inputs are rejected. Durations serialize as
+ISO 8601 durations such as `"PT15S"`. Risk budgets must be explicitly
+configured; loading missing settings does not create default trading limits.
+
+Do not treat editing `.env` as the supported operator UI. The service still
+has no authentication or state-changing configuration endpoint; these backend
+helpers are preparation for the authenticated dashboard, not exposed controls.
 
 ## Roadmap
 

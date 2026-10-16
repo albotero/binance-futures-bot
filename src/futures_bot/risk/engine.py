@@ -291,7 +291,7 @@ def size_position(
     estimated_loss = quantity * stop_distance
     margin_required = notional / request.leverage
 
-    if quantity < minimum_quantity:
+    if quantity <= _ZERO or quantity < minimum_quantity:
         return _denied(
             ("risk and account limits produce less than the exchange minimum quantity",),
             risk_budget,
