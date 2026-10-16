@@ -19,12 +19,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from futures_bot.exchange.binance_usdm import validate_symbol_name
+from futures_bot.exchange.leverage import LeverageProvider, LeverageSchedule
 from futures_bot.persistence.models import ApplicationConfiguration
 from futures_bot.persistence.repositories import (
     ConfigurationConflict,
     save_application_configuration,
 )
-from futures_bot.risk.engine import PLATFORM_MAX_LEVERAGE, RiskPolicy
+from futures_bot.risk.engine import RiskPolicy
 
 _DECIMAL_FIELDS = frozenset(
     {
@@ -50,7 +51,8 @@ class SymbolConfiguration(BaseModel):
 
     symbol: str
     enabled: StrictBool = True
-    leverage: Annotated[StrictInt, Field(ge=1, le=PLATFORM_MAX_LEVERAGE)] = 1
+    leverage: Annotated[StrictInt, Field(ge=1)] = 1
+    leverage_schedule: LeverageSchedule | None = None
 
     @field_validator("symbol")
     @classmethod
@@ -107,9 +109,28 @@ class RiskConfiguration(BaseModel):
     def validate_leverage_limits(self) -> RiskConfiguration:
         if any(not symbol.symbol.endswith(self.quote_asset) for symbol in self.symbols):
             raise ValueError("all configured symbols must match the selected quote asset")
-        if any(symbol.leverage > self.policy.maximum_leverage for symbol in self.symbols):
-            raise ValueError("symbol leverage exceeds the configured policy maximum")
+        for symbol in self.symbols:
+            if symbol.leverage_schedule is not None:
+                if symbol.leverage_schedule.symbol != symbol.symbol:
+                    raise ValueError("leverage schedule must match its symbol")
+                symbol.leverage_schedule.notional_limit(symbol.leverage)
         return self
+
+
+async def verify_leverage_configuration(
+    configuration: RiskConfiguration, provider: LeverageProvider
+) -> RiskConfiguration:
+    schedules = {item.symbol: item for item in await provider.schedules()}
+    symbols = []
+    for symbol in configuration.symbols:
+        schedule = schedules.get(symbol.symbol)
+        if schedule is None:
+            raise ValueError(f"{symbol.symbol} has no verified Binance leverage brackets")
+        schedule.notional_limit(symbol.leverage)
+        symbols.append(symbol.model_copy(update={"leverage_schedule": schedule}))
+    return RiskConfiguration(
+        quote_asset=configuration.quote_asset, policy=configuration.policy, symbols=tuple(symbols)
+    )
 
 
 @dataclass(frozen=True, slots=True)

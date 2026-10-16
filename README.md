@@ -11,7 +11,10 @@ shared strategy and risk components.
   historical research, audits, and persistent single-symbol paper trading.
 - Trading mode is restricted to `backtest` or `paper`.
 - A public-data worker processes simulated closed-bar trades; it cannot
-  submit exchange orders. Exchange API credentials are not required.
+  submit exchange orders. Offline research/legacy paper snapshots need no keys.
+- Dashboard risk saves and new research/paper runs verify production-account
+  leverage brackets through a read-only signed lookup. Provision credentials
+  privately on the server; they are never returned to the browser.
 - The guarded live coordinator is an unconnected building block, not a
   usable live Binance adapter. There is no live activation route.
 - `/health` reports liveness; `/ready` checks dashboard/database startup,
@@ -86,15 +89,25 @@ such as the database location and, only if needed in a later phase, secret
 injection. Exchange credentials are never exposed to the browser or saved as
 ordinary strategy configuration.
 
-Leverage is part of risk-controlled configuration, defaults to **1x**, and has
-a platform ceiling of **50x**. The suggested dashboard policy remains **5x**;
-existing saved limits are never raised automatically. The backend's omitted
-policy-limit default remains 20x for compatibility. Set the portfolio limit
-explicitly before selecting higher per-asset leverage. Leverage changes simulated
-margin requirements, never the configured stop-loss budget. Higher leverage
-increases liquidation risk. The 50x simulation ceiling is not confirmation of a
-contract's actual Binance account/notional leverage bracket; live operation
-would still need verified exchange limits and remains unavailable.
+Leverage defaults to **1x** and is configured independently for each asset.
+There is **no separate portfolio leverage cap**. The dashboard reads each
+symbol's actual maximum from Binance's production-account leverage brackets,
+rather than imposing a fixed 5x, 50x or 125x maximum. Higher leverage permits
+less notional exposure: the risk engine caps simulated order size at the
+applicable bracket as well as the existing loss, exposure and margin limits.
+Existing exposure consumes bracket capacity (the generic risk adapter
+conservatively subtracts total open exposure). Leverage changes margin, never
+the stop-based risk budget. Higher leverage increases liquidation risk.
+
+Bracket snapshots refresh on saves and new dashboard research/paper runs,
+using a maximum 60-second cache; unavailable/invalid verification blocks those
+operations explicitly rather than falling back. Existing runs retain recorded
+snapshots; historical research uses current, not historical, account brackets.
+This does not query balances, replicate bracket-accurate liquidation, change
+leverage on Binance, place orders, or enable live trading. Old/offline snapshots
+without bracket data retain an explicitly unverified 50x simulation ceiling.
+The old policy `maximum_leverage` field remains readable for snapshot
+compatibility only; it no longer constrains leverage and is hidden in the UI.
 
 ## Database schema
 
@@ -177,6 +190,12 @@ are never selectable and cannot produce executable trading rules. Trading
 contracts still require positive increments; invalid metadata fails closed.
 The authenticated endpoint is `GET /api/market/contracts` with optional
 `quote_asset=USDC|USDT` and `environment=production|testnet`.
+The separate authenticated `GET /api/market/leverage` reads production-account
+brackets. Selected asset controls show the verified maximum, notional cap at
+the chosen leverage, and verification time. The public directory's environment
+does not change which account supplied the leverage snapshot. Testnet public
+prices may be simulated under these production-account constraints; this does
+not verify a testnet account or authorize testnet orders.
 
 Switching quote currency requires confirmation and clears only the unsaved
 asset selection so that actual contracts must be selected again. It does not
@@ -184,6 +203,16 @@ rename symbols into potentially nonexistent contracts, edit saved settings
 until submission, or change existing paper-run snapshots. At least one asset
 must be selected to save. Research and paper selectors list only enabled,
 saved assets, with their configured leverage.
+
+### Balance and price freshness
+
+**Maximum balance-data age** is the permitted delay since a balance/equity
+snapshot, not the age of your Binance account. **Maximum price-data age** is
+the permitted delay since the price snapshot used for sizing, not an asset's
+age, candle interval or position holding period. Both default to `PT15S`
+(15 seconds); `PT1M` means one minute. Stale or future-dated data blocks new
+entries. Simulations create balance/price snapshots at each simulated bar.
+These guards remain enabled and have inline dashboard explanations.
 
 ## Persistent paper operation
 
@@ -262,10 +291,10 @@ fetching, API controls, and paper-loop integration remain pending.
 
 The web-based configuration screen and authenticated API store the required
 risk policy and unique per-symbol settings under `risk` in the versioned
-runtime configuration. Leverage defaults to 1x, must be an integer, and cannot
-exceed the policy cap or the platform's 50x ceiling. Entry evaluation applies
-the saved leverage, not a caller's requested override, and still checks the
-exchange limit.
+runtime configuration. Leverage defaults to 1x and must be a positive integer
+within the symbol's verified account bracket. Entry evaluation applies the
+saved leverage, not a caller's requested override, and checks both exchange
+leverage and available notional capacity. No portfolio leverage cap applies.
 
 The risk document has a `quote_asset` selector (`"USDC"` by default or
 `"USDT"`). Every configured symbol must match that quote; use `BTCUSDC`, for

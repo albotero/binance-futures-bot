@@ -153,7 +153,7 @@ def test_risk_configuration_round_trips_exact_values_and_schema(
         ("risk_fraction", "-0.01"),
         ("maximum_leverage", True),
         ("maximum_leverage", "5"),
-        ("maximum_leverage", 51),
+        ("maximum_leverage", 0),
         ("maximum_account_age", True),
         ("maximum_market_age", "PT0S"),
         ("unknown", "value"),
@@ -174,7 +174,7 @@ def test_risk_policy_payload_rejects_ambiguous_or_invalid_values(
         {"symbol": "btcusdt"},
         {"symbol": "BTC USDT"},
         {"symbol": "BTCUSDT", "leverage": 0},
-        {"symbol": "BTCUSDT", "leverage": 51},
+        {"symbol": "BTCUSDT", "leverage": -1},
         {"symbol": "BTCUSDT", "leverage": True},
         {"symbol": "BTCUSDT", "leverage": "5"},
         {"symbol": "BTCUSDT", "enabled": "false"},
@@ -186,17 +186,17 @@ def test_symbol_settings_are_strict(payload: dict[str, object]) -> None:
         SymbolConfiguration.model_validate(payload)
 
 
-def test_duplicate_symbols_and_leverage_above_policy_cap_are_rejected(
+def test_duplicate_symbols_rejected_but_legacy_portfolio_cap_is_not_applied(
     settings: RiskConfiguration,
 ) -> None:
     with pytest.raises(ValidationError, match="unique"):
         RiskConfiguration(quote_asset="USDT", policy=settings.policy, symbols=settings.symbols * 2)
-    with pytest.raises(ValidationError, match="policy maximum"):
-        RiskConfiguration(
-            quote_asset="USDT",
-            policy=replace(settings.policy, maximum_leverage=2),
-            symbols=(SymbolConfiguration(symbol="BTCUSDT", leverage=3),),
-        )
+    configuration = RiskConfiguration(
+        quote_asset="USDT",
+        policy=replace(settings.policy, maximum_leverage=2),
+        symbols=(SymbolConfiguration(symbol="BTCUSDT", leverage=50),),
+    )
+    assert configuration.symbols[0].leverage == 50
 
 
 def test_risk_settings_preserve_other_runtime_fields_and_audit_changes(
@@ -381,7 +381,7 @@ def test_configured_leverage_is_still_rejected_above_exchange_limit(
     save_account_state(session, account_state, environment="simulated")
     result = evaluate_configured_entry(session, entry, portfolio, environment="simulated", now=NOW)
     assert not result.decision.accepted
-    assert "requested leverage exceeds a platform or exchange limit" in result.decision.reasons
+    assert "requested leverage exceeds the exchange limit" in result.decision.reasons
 
 
 def test_configured_evaluation_rejects_disabled_symbol_and_stale_accounts(

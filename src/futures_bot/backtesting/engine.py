@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from futures_bot.exchange import FundingRate, Kline, SymbolRules
 from futures_bot.risk import AccountState, PortfolioState, RiskDecision, RiskRequest, size_position
 from futures_bot.risk.configuration import RiskConfiguration
-from futures_bot.risk.engine import PLATFORM_MAX_LEVERAGE
+from futures_bot.risk.engine import UNVERIFIED_SIMULATION_MAX_LEVERAGE
 from futures_bot.strategy import EntrySetup, StrategyConfiguration, evaluate_pullback
 from futures_bot.strategy.lifecycle import evaluate_entry, evaluate_exit
 from futures_bot.strategy.pullback import STRATEGY_VERSION, _validate_candles
@@ -438,6 +438,9 @@ def _size_entry(
         protective_orders_healthy=True,
         connectivity_healthy=True,
     )
+    schedule = next(
+        (item.leverage_schedule for item in risk.symbols if item.symbol == setup.symbol), None
+    )
     request = RiskRequest(
         symbol=setup.symbol,
         direction=setup.direction,
@@ -445,9 +448,12 @@ def _size_entry(
         stop_price=setup.stop_price,
         target_price=setup.target_price,
         leverage=leverage,
-        exchange_max_leverage=PLATFORM_MAX_LEVERAGE,
+        exchange_max_leverage=schedule.maximum_leverage
+        if schedule is not None
+        else UNVERIFIED_SIMULATION_MAX_LEVERAGE,
         symbol_rules=rules,
         market_time=time,
+        exchange_notional_cap=schedule.notional_limit(leverage) if schedule is not None else None,
     )
     return size_position(request, account, portfolio, risk.policy, now=time)
 

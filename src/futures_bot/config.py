@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -21,6 +22,7 @@ class Settings(BaseSettings):
     secure_cookies: bool = True
     frontend_directory: str = "frontend/dist"
     session_lifetime_seconds: int = Field(default=28800, ge=300, le=86400)
+    binance_leverage_credentials_file: Path = Path("/etc/futures-platform/binance-leverage.json")
 
     @field_validator("reporting_timezone")
     @classmethod

@@ -11,7 +11,7 @@ RiskBasis = Literal["available_balance", "equity"]
 Direction = Literal["long", "short"]
 _ZERO = Decimal(0)
 _ONE = Decimal(1)
-PLATFORM_MAX_LEVERAGE = 50
+UNVERIFIED_SIMULATION_MAX_LEVERAGE = 50
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +89,7 @@ class RiskPolicy:
     maximum_stop_distance_fraction: Decimal
     minimum_reward_to_risk: Decimal
     maximum_open_positions: int
+    # Legacy snapshot field only; leverage is now constrained per symbol.
     maximum_leverage: int = 20
     maximum_account_age: timedelta = timedelta(seconds=15)
     maximum_market_age: timedelta = timedelta(seconds=15)
@@ -119,11 +120,8 @@ class RiskPolicy:
                 raise ValueError(f"{name} must be greater than 0")
         if type(self.maximum_open_positions) is not int or self.maximum_open_positions < 1:
             raise ValueError("maximum_open_positions must be a positive integer")
-        if (
-            type(self.maximum_leverage) is not int
-            or not 1 <= self.maximum_leverage <= PLATFORM_MAX_LEVERAGE
-        ):
-            raise ValueError(f"maximum_leverage must be between 1 and {PLATFORM_MAX_LEVERAGE}")
+        if type(self.maximum_leverage) is not int or self.maximum_leverage < 1:
+            raise ValueError("legacy maximum_leverage must be a positive integer")
         for name in ("maximum_account_age", "maximum_market_age"):
             age = getattr(self, name)
             if not isinstance(age, timedelta) or age <= timedelta(0):
@@ -141,6 +139,7 @@ class RiskRequest:
     symbol_rules: SymbolRules
     market_time: datetime
     target_price: Decimal | None = None
+    exchange_notional_cap: Decimal | None = None
 
     def __post_init__(self) -> None:
         validate_symbol_name(self.symbol)
@@ -154,6 +153,10 @@ class RiskRequest:
             raise ValueError("leverage must be a positive integer")
         if type(self.exchange_max_leverage) is not int or self.exchange_max_leverage < 1:
             raise ValueError("exchange_max_leverage must be a positive integer")
+        if self.exchange_notional_cap is not None:
+            _require_decimal(self.exchange_notional_cap, "exchange_notional_cap")
+            if self.exchange_notional_cap <= _ZERO:
+                raise ValueError("exchange_notional_cap must be positive")
         if not isinstance(self.symbol_rules, SymbolRules):
             raise ValueError("symbol_rules must be exchange symbol rules")
         if self.symbol_rules.symbol != self.symbol:
@@ -217,8 +220,8 @@ def size_position(
         reasons.append("maximum daily loss reached")
     if portfolio.drawdown_fraction >= policy.maximum_drawdown_fraction:
         reasons.append("maximum drawdown reached")
-    if request.leverage > min(policy.maximum_leverage, request.exchange_max_leverage):
-        reasons.append("requested leverage exceeds a platform or exchange limit")
+    if request.leverage > request.exchange_max_leverage:
+        reasons.append("requested leverage exceeds the exchange limit")
 
     _validate_symbol_rules(request.symbol_rules)
     rules = request.symbol_rules
@@ -284,6 +287,15 @@ def size_position(
         available_margin * request.leverage,
         maximum_quantity * request.entry_price,
     )
+    if request.exchange_notional_cap is not None:
+        bracket_room = request.exchange_notional_cap - account.open_exposure
+        if bracket_room <= _ZERO:
+            return _denied(
+                ("Binance leverage bracket has no remaining notional capacity",),
+                risk_budget,
+                stop_distance,
+            )
+        notional_cap = min(notional_cap, bracket_room)
     quantity_cap = min(available_risk / stop_distance, notional_cap / request.entry_price)
     quantity = (quantity_cap / quantity_step).to_integral_value(
         rounding=ROUND_FLOOR

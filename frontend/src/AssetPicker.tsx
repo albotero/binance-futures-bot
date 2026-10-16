@@ -4,7 +4,7 @@ type Contract = { symbol: string; base_asset: string; quote_asset: "USDC" | "USD
 type Catalog = {
   environment: "production" | "testnet";
   quote_asset: "USDC" | "USDT";
-  platform_max_leverage: number;
+  unverified_simulation_max_leverage: number;
   exchange_leverage_verified: boolean;
   items: Contract[];
 };

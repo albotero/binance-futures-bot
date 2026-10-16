@@ -61,6 +61,42 @@ printed. Provision a LAN-trusted certificate/key separately; key readability mus
 be restricted to nginx's privileged master process. Bind only the private
 interface, retain firewall LAN restrictions, and do not forward this port publicly.
 
+### Read-only Binance leverage verification
+
+The dashboard uses signed **GET** `/fapi/v1/leverageBracket` on
+`https://fapi.binance.com`, with public server time, a 5-second receive window,
+no redirects/proxy environment and a 60-second in-memory cache. The adapter has
+no order, balance, leverage-change or withdrawal methods. It does not enable
+live trading. Use a dedicated appropriately IP-restricted API key with only
+the permissions Binance requires for this read operation; never add trading
+or withdrawal permissions merely to make verification succeed.
+
+Provision a JSON object with exactly `api_key` and `api_secret` through a trusted
+private channel, outside Git, environment files, command-line arguments and
+the build tree. The default location is
+`/etc/futures-platform/binance-leverage.json`, owned by `futures-bot` with mode
+`0600`. Symlinks, group/world-readable,
+empty, malformed and non-regular files are refused. The runtime file is not
+copied by the installer, served by nginx or included in database backups.
+Keep your own protected secret backup and rotation procedure. The app's
+`BOT_BINANCE_LEVERAGE_CREDENTIALS_FILE` setting can specify another private path;
+the deployment default needs no environment override.
+
+Without valid credentials, the application still starts and serves existing
+records, but leverage verification, risk saves and new dashboard research/
+paper runs fail explicitly. No guessed bracket or stale-success fallback is
+used. Rotate the private file atomically and restart the application to flush
+the cache; verify `/api/market/leverage` while authenticated. Existing settings
+are not rewritten automatically. Bracket snapshots contain only non-secret
+limits/timestamps, not keys, balances or signed URLs.
+
+New runs record current production-account bracket snapshots and enforce the
+notional cap for their configured leverage. Old runs/offline research retain
+their existing unverified assumptions. Existing runs are not continuously
+reconciled to account changes, and liquidation remains a stress assumption,
+not an exchange-accurate bracket calculation. Real-money execution remains
+unavailable.
+
 ### Private-IP TLS without a DNS record
 
 If the operator explicitly accepts a self-signed certificate, use the assigned

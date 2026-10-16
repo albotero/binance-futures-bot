@@ -111,7 +111,7 @@ def test_size_is_decimal_step_aligned_and_leverage_does_not_raise_risk() -> None
     assert five_x.margin_required == Decimal("1000")
 
 
-def test_50x_requires_explicit_policy_and_exchange_permission_without_increasing_risk():
+def test_50x_requires_exchange_permission_but_not_a_portfolio_cap():
     baseline = size_position(request(), account(), portfolio(), policy(), now=NOW)
     high = size_position(
         request(leverage=50, exchange_max_leverage=50),
@@ -131,15 +131,44 @@ def test_50x_requires_explicit_policy_and_exchange_permission_without_increasing
         policy(maximum_leverage=50),
         now=NOW,
     ).accepted
-    assert not size_position(
+    assert size_position(
         request(leverage=50, exchange_max_leverage=50),
         account(),
         portfolio(),
-        policy(),
+        policy(maximum_leverage=5),
         now=NOW,
     ).accepted
-    with pytest.raises(ValueError, match="between 1 and 50"):
-        policy(maximum_leverage=51)
+    with pytest.raises(ValueError, match="positive integer"):
+        policy(maximum_leverage=0)
+
+
+def test_exchange_notional_bracket_caps_size_and_accounts_for_existing_exposure():
+    result = size_position(
+        request(leverage=125, exchange_max_leverage=125, exchange_notional_cap=Decimal("1000")),
+        account(open_exposure=Decimal("400")),
+        portfolio(),
+        policy(maximum_leverage=5),
+        now=NOW,
+    )
+    assert result.accepted
+    assert result.notional == Decimal("600")
+    assert result.quantity == Decimal("6")
+    assert result.estimated_stop_loss <= result.risk_budget
+    assert result.margin_required == result.notional / 125
+    denied = size_position(
+        request(leverage=125, exchange_max_leverage=125, exchange_notional_cap=Decimal("1000")),
+        account(open_exposure=Decimal("1000")),
+        portfolio(),
+        policy(),
+        now=NOW,
+    )
+    assert not denied.accepted and "notional capacity" in denied.reasons[0]
+
+
+@pytest.mark.parametrize("cap", [Decimal("0"), Decimal("-1"), Decimal("NaN")])
+def test_exchange_notional_cap_must_be_positive_and_finite(cap):
+    with pytest.raises(ValueError):
+        request(exchange_notional_cap=cap)
 
 
 def test_short_position_uses_mirrored_stop_and_target_distances() -> None:
@@ -290,9 +319,9 @@ def test_exchange_minimum_quantity_and_notional_reject_undersized_orders() -> No
 
 @pytest.mark.parametrize(
     ("leverage", "exchange_max"),
-    [(21, 30), (10, 5)],
+    [(31, 30), (10, 5)],
 )
-def test_leverage_is_capped_by_platform_and_exchange(
+def test_leverage_is_capped_by_verified_exchange_limit(
     leverage: int,
     exchange_max: int,
 ) -> None:

@@ -12,7 +12,7 @@ from futures_bot.backtesting import BacktestConfiguration, BacktestResult, run_b
 from futures_bot.backtesting.results import save_backtest_result
 from futures_bot.data.candles import fetch_historical_klines
 from futures_bot.exchange import BinanceUSDmClient
-from futures_bot.risk.configuration import load_risk_configuration
+from futures_bot.risk.configuration import RiskConfiguration, load_risk_configuration
 from futures_bot.strategy.configuration import load_strategy_configuration
 
 
@@ -42,10 +42,19 @@ class ResearchRequest(BaseModel):
 
 
 async def execute_research(
-    session: Session, request: ResearchRequest, *, actor: str
+    session: Session,
+    request: ResearchRequest,
+    *,
+    actor: str,
+    risk_override: RiskConfiguration | None = None,
+    expected_risk_version: int | None = None,
 ) -> tuple[str, BacktestResult]:
     """Public production prices only, no keys or account calls. Caller commits."""
     risk = load_risk_configuration(session)
+    if risk_override is not None:
+        if expected_risk_version != risk.version:
+            raise ValueError("risk settings changed while verifying leverage; reload")
+        risk = type(risk)(version=risk.version, configuration=risk_override)
     strategy = load_strategy_configuration(session)
     if not any(
         item.symbol == request.symbol and item.enabled for item in risk.configuration.symbols

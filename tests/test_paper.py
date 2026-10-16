@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from test_backtesting import START
 
 from futures_bot.backtesting import BacktestConfiguration
+from futures_bot.exchange.leverage import LeverageBracket, LeverageSchedule
 from futures_bot.execution.paper import (
     PaperEvent,
     PaperRun,
@@ -18,7 +19,11 @@ from futures_bot.execution.paper import (
 from futures_bot.persistence.database import create_schema_for_tests, make_engine
 from futures_bot.persistence.models import Fill, OrderRecord, Position, Trade
 from futures_bot.persistence.repositories import ConfigurationConflict
-from futures_bot.risk.configuration import save_risk_configuration
+from futures_bot.risk.configuration import (
+    RiskConfiguration,
+    SymbolConfiguration,
+    save_risk_configuration,
+)
 from futures_bot.strategy import StrategyConfiguration
 from futures_bot.strategy.configuration import save_strategy_configuration
 
@@ -94,6 +99,35 @@ def test_restart_and_repeated_bar_preserve_exactly_one_entry(factory, history, r
         assert position.status == "open"
     second = process(factory, run_id, history, rules, 1)
     assert PaperState.model_validate(second.state).position.bars_held == 2
+
+
+def test_paper_125x_entry_respects_verified_bracket_snapshot(factory, history, rules, risk):
+    schedule = LeverageSchedule(
+        symbol="BTCUSDC",
+        fetched_at=START,
+        brackets=(LeverageBracket(initial_leverage=125, notional_floor="0", notional_cap="1000"),),
+    )
+    configured = RiskConfiguration(
+        policy=risk.policy,
+        symbols=(
+            SymbolConfiguration(
+                symbol="BTCUSDC",
+                leverage=125,
+                leverage_schedule=schedule,
+            ),
+        ),
+    )
+    with factory() as session:
+        save_risk_configuration(session, configured, actor="test", expected_version=2)
+        session.commit()
+    run_id = start(factory)
+    row = process(factory, run_id, history, rules)
+    position = PaperState.model_validate(row.state).position
+    assert position is not None and position.leverage == 125
+    assert position.entry_price * position.quantity <= Decimal("1000")
+    assert (
+        row.configuration["risk"]["symbols"][0]["leverage_schedule"]["environment"] == "production"
+    )
 
 
 def test_pause_blocks_entries_but_existing_protection_remains_managed(factory, history, rules):

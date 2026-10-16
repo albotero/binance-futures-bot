@@ -39,7 +39,21 @@ def evaluate_configured_entry(
     account = load_latest_account_state(
         session, environment=environment, quote_asset=settings.quote_asset
     )
-    configured_request = replace(request, leverage=symbol.leverage)
+    notional_limits = [
+        limit
+        for limit in (
+            request.exchange_notional_cap,
+            symbol.leverage_schedule.notional_limit(symbol.leverage)
+            if symbol.leverage_schedule is not None
+            else None,
+        )
+        if limit is not None
+    ]
+    configured_request = replace(
+        request,
+        leverage=symbol.leverage,
+        exchange_notional_cap=min(notional_limits) if notional_limits else None,
+    )
     decision = size_position(
         configured_request,
         account.state,

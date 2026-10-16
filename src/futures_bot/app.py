@@ -6,9 +6,14 @@ from fastapi import FastAPI, HTTPException, Request
 from sqlalchemy import text
 
 from futures_bot.exchange import BinanceAPIError, BinancePayloadError
+from futures_bot.exchange.leverage import LeverageLookupError, LeverageProvider
 from futures_bot.persistence.database import make_engine, make_session_factory
 from futures_bot.research import ResearchRequest, execute_research
-from futures_bot.risk.configuration import MissingRiskConfiguration
+from futures_bot.risk.configuration import (
+    MissingRiskConfiguration,
+    load_risk_configuration,
+    verify_leverage_configuration,
+)
 from futures_bot.strategy.configuration import MissingStrategyConfiguration
 
 from .config import Settings
@@ -72,6 +77,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         factory = make_session_factory(engine)
         research_slot = asyncio.Lock()
+        leverage_provider = LeverageProvider(active_settings.binance_leverage_credentials_file)
 
         @app.post("/api/research/run")
         async def research_run(request: Request, payload: ResearchRequest) -> dict[str, object]:
@@ -80,10 +86,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             async with research_slot:
                 with factory() as session:
                     try:
+                        saved = load_risk_configuration(session)
+                        verified_risk = await verify_leverage_configuration(
+                            saved.configuration, leverage_provider
+                        )
                         run_id, result = await execute_research(
                             session,
                             payload,
                             actor=request.state.owner_username,
+                            risk_override=verified_risk,
+                            expected_risk_version=saved.version,
                         )
                         session.commit()
                     except (MissingRiskConfiguration, MissingStrategyConfiguration) as exc:
@@ -92,6 +104,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         raise HTTPException(
                             502, "public exchange data is unavailable or invalid"
                         ) from exc
+                    except LeverageLookupError as exc:
+                        raise HTTPException(503, str(exc)) from None
                     except ValueError as exc:
                         raise HTTPException(422, str(exc)) from exc
             return {"id": run_id, "result": result.model_dump(mode="json")}
@@ -106,5 +120,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 session_ttl_seconds=active_settings.session_lifetime_seconds,
                 frontend_dist=Path(active_settings.frontend_directory),
             ),
+            leverage_provider=leverage_provider,
         )
     return app

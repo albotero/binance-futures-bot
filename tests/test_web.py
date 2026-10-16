@@ -1,6 +1,8 @@
+import json
 from datetime import timedelta
 from pathlib import Path
 
+import httpx2
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -8,6 +10,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.pool import StaticPool
 
 from futures_bot.exchange import BinanceAPIError, ExchangeInformation
+from futures_bot.exchange.leverage import LeverageProvider
 from futures_bot.persistence.database import make_session_factory
 from futures_bot.persistence.models import (
     ApplicationConfiguration,
@@ -26,7 +29,7 @@ PASSWORD = "correct horse battery staple 123!"
 
 
 @pytest.fixture
-def web():
+def web(request, tmp_path):
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -36,10 +39,40 @@ def web():
     Base.metadata.create_all(engine)
     bootstrap_owner(factory, "owner", PASSWORD)
     app = FastAPI()
+    provider = None
+    if getattr(request, "param", False):
+        keys = tmp_path / "keys.json"
+        keys.write_text(json.dumps({"api_key": "fake-key", "api_secret": "fake-secret"}))
+        keys.chmod(0o600)
+
+        def handler(req):
+            if req.url.path.endswith("/time"):
+                return httpx2.Response(200, json={"serverTime": 1700000000123})
+            return httpx2.Response(
+                200,
+                json=[
+                    {
+                        "symbol": "BTCUSDC",
+                        "brackets": [
+                            {"initialLeverage": 125, "notionalFloor": "0", "notionalCap": "1000"},
+                            {
+                                "initialLeverage": 50,
+                                "notionalFloor": "1000",
+                                "notionalCap": "10000",
+                            },
+                        ],
+                    }
+                ],
+            )
+
+        provider = LeverageProvider(keys, transport=httpx2.MockTransport(handler))
+        if request.param == "missing":
+            keys.unlink()
     configure_web(
         app,
         factory,
         WebAuthSettings(allowed_origins=(ORIGIN,), cookie_secure=False, local_mode=True),
+        leverage_provider=provider,
     )
     with TestClient(app, base_url=ORIGIN) as client:
         yield client, factory, app
@@ -103,6 +136,95 @@ def test_uninitialized_strategy_provides_all_editable_defaults(web):
         "entry_expiry_bars": 3,
         "time_stop_bars": 8,
     }
+    with factory() as session:
+        assert session.get(ApplicationConfiguration, "runtime") is None
+
+
+@pytest.mark.parametrize("web", [True], indirect=True)
+def test_account_brackets_are_authenticated_and_enforced_on_save(web):
+    client, factory, _ = web
+    assert client.get("/api/market/leverage").status_code == 401
+    token = login(client)
+    response = client.get("/api/market/leverage")
+    assert response.status_code == 200
+    assert response.json()["exchange_leverage_verified"] is True
+    assert response.json()["items"][0]["maximum_leverage"] == 125
+    assert "fake-secret" not in response.text and "fake-key" not in response.text
+    config = risk_config()
+    config["symbols"][0]["leverage"] = 125
+    config["symbols"][0]["leverage_schedule"] = {
+        "symbol": "BTCUSDC",
+        "fetched_at": "2026-10-16T12:00:00Z",
+        "brackets": [{"initial_leverage": 200, "notional_floor": "0", "notional_cap": "999999999"}],
+    }
+    headers = {"Origin": ORIGIN, "X-CSRF-Token": token}
+    response = client.put(
+        "/api/config/risk",
+        headers=headers,
+        json={"expected_version": 0, "configuration": config},
+    )
+    assert response.status_code == 200
+    saved = client.get("/api/config/risk").json()["configuration"]
+    assert saved["symbols"][0]["leverage"] == 125
+    assert saved["symbols"][0]["leverage_schedule"]["brackets"][0]["notional_cap"] == "1000"
+    config["symbols"][0]["leverage"] = 126
+    assert (
+        client.put(
+            "/api/config/risk",
+            headers=headers,
+            json={"expected_version": 1, "configuration": config},
+        ).status_code
+        == 422
+    )
+    config["symbols"][0] = {"symbol": "ETHUSDC", "enabled": True, "leverage": 1}
+    assert (
+        client.put(
+            "/api/config/risk",
+            headers=headers,
+            json={"expected_version": 1, "configuration": config},
+        ).status_code
+        == 422
+    )
+    with factory() as session:
+        assert session.get(ApplicationConfiguration, "runtime").version == 1
+    strategy = client.get("/api/config/strategy").json()["defaults"]
+    assert (
+        client.put(
+            "/api/config/strategy",
+            headers=headers,
+            json={"expected_version": 1, "configuration": strategy},
+        ).status_code
+        == 200
+    )
+    paper = client.post(
+        "/api/paper/runs",
+        headers=headers,
+        json={
+            "symbol": "BTCUSDC",
+            "start": "2026-10-16T12:00:00Z",
+            "environment": "production",
+            "simulation": {"starting_balance": "10000"},
+        },
+    )
+    assert paper.status_code == 201, paper.text
+    assert paper.json()["status"] == "paused"
+    snapshot = paper.json()["configuration"]["risk"]["symbols"][0]
+    assert snapshot["leverage"] == 125
+    assert snapshot["leverage_schedule"]["brackets"][0]["notional_cap"] == "1000"
+
+
+@pytest.mark.parametrize("web", ["missing"], indirect=True)
+def test_missing_credentials_block_verified_risk_saves_without_mutating_settings(web):
+    client, factory, _ = web
+    token = login(client)
+    assert client.get("/api/market/leverage").status_code == 503
+    response = client.put(
+        "/api/config/risk",
+        headers={"Origin": ORIGIN, "X-CSRF-Token": token},
+        json={"expected_version": 0, "configuration": risk_config()},
+    )
+    assert response.status_code == 503
+    assert "fake-secret" not in response.text
     with factory() as session:
         assert session.get(ApplicationConfiguration, "runtime") is None
 
@@ -318,7 +440,7 @@ def test_config_validation_no_credentials_and_no_live_actions(web):
     token = login(client)
     headers = {"Origin": ORIGIN, "X-CSRF-Token": token}
     config = risk_config()
-    config["symbols"][0]["leverage"] = 51
+    config["symbols"][0]["leverage"] = 0
     response = client.put(
         "/api/config/risk",
         headers=headers,
@@ -412,7 +534,7 @@ def test_contract_directory_filters_and_caches_public_metadata(web, monkeypatch)
     assert response.status_code == 200
     result = response.json()
     assert result["quote_asset"] == "USDC" and result["environment"] == "production"
-    assert result["platform_max_leverage"] == 50
+    assert result["unverified_simulation_max_leverage"] == 50
     assert result["exchange_leverage_verified"] is False
     assert [item["symbol"] for item in result["items"]] == ["BTCUSDC", "ETHUSDC"]
     assert result["items"][0]["base_asset"] == "BTC"
@@ -453,7 +575,7 @@ def test_contract_directory_reports_outage_without_stale_success(web, monkeypatc
     assert "sensitive" not in response.text
 
 
-def test_web_accepts_explicit_50x_and_rejects_above_policy_and_platform(web):
+def test_web_accepts_50x_without_separate_portfolio_limit(web):
     client, _, _ = web
     token = login(client)
     headers = {"Origin": ORIGIN, "X-CSRF-Token": token}
@@ -476,15 +598,14 @@ def test_web_accepts_explicit_50x_and_rejects_above_policy_and_platform(web):
             headers=headers,
             json={"expected_version": 1, "configuration": config},
         ).status_code
-        == 422
+        == 200
     )
-    config["policy"]["maximum_leverage"] = 51
-    config["symbols"][0]["leverage"] = 51
+    config["symbols"][0]["leverage"] = 0
     assert (
         client.put(
             "/api/config/risk",
             headers=headers,
-            json={"expected_version": 1, "configuration": config},
+            json={"expected_version": 2, "configuration": config},
         ).status_code
         == 422
     )

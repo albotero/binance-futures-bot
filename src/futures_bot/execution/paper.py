@@ -124,6 +124,8 @@ def create_paper_run(
     environment: Literal["testnet", "production"],
     start: datetime,
     actor: str,
+    risk_override: RiskConfiguration | None = None,
+    expected_risk_version: int | None = None,
 ) -> PaperRun:
     from zoneinfo import ZoneInfo
 
@@ -136,6 +138,10 @@ def create_paper_run(
     if session.scalar(select(PaperRun.id).where(PaperRun.status != "stopped")) is not None:
         raise ValueError("stop the existing paper run before creating another")
     risk = load_risk_configuration(session)
+    if risk_override is not None:
+        if expected_risk_version != risk.version:
+            raise ConfigurationConflict("risk settings changed while verifying leverage; reload")
+        risk = type(risk)(version=risk.version, configuration=risk_override)
     strategy = load_strategy_configuration(session)
     if not any(item.symbol == symbol and item.enabled for item in risk.configuration.symbols):
         raise ValueError("paper symbol must be enabled in saved risk settings")

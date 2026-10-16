@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from futures_bot.backtesting import BacktestConfiguration, BacktestResult, run_backtest
 from futures_bot.exchange import FundingRate, Kline, SymbolRules
+from futures_bot.exchange.leverage import LeverageBracket, LeverageSchedule
 from futures_bot.risk import RiskPolicy
 from futures_bot.risk.configuration import RiskConfiguration, SymbolConfiguration
 from futures_bot.strategy import StrategyConfiguration, evaluate_pullback
@@ -234,6 +235,46 @@ def test_simulation_supports_50x_without_enlarging_position_risk(history, rules,
     assert high.trades and baseline.trades
     assert high.trades[0].quantity == baseline.trades[0].quantity
     assert not any("leverage" in str(item).lower() for item in high.risk_rejections)
+
+
+def test_simulation_applies_verified_125x_notional_bracket(history, rules, risk):
+    schedule = LeverageSchedule(
+        symbol="BTCUSDC",
+        fetched_at=START,
+        brackets=(
+            LeverageBracket(
+                initial_leverage=125,
+                notional_floor="0",
+                notional_cap="1000",
+            ),
+        ),
+    )
+    configured = RiskConfiguration(
+        policy=replace(risk.policy, maximum_leverage=5),
+        symbols=(
+            SymbolConfiguration(
+                symbol="BTCUSDC",
+                leverage=125,
+                leverage_schedule=schedule,
+            ),
+        ),
+    )
+    result = simulate(history, rules, configured)
+    assert result.trades
+    assert result.trades[0].entry_price * result.trades[0].quantity <= D("1000")
+    assert (
+        result.configuration_snapshot["risk"]["symbols"][0]["leverage_schedule"]["brackets"][0][
+            "notional_cap"
+        ]
+        == "1000"
+    )
+    unverified = RiskConfiguration(
+        policy=risk.policy,
+        symbols=(SymbolConfiguration(symbol="BTCUSDC", leverage=125),),
+    )
+    blocked = simulate(history, rules, unverified)
+    assert not blocked.trades
+    assert any("leverage" in str(item).lower() for item in blocked.risk_rejections)
 
 
 def test_decimal_context_does_not_change_research_results(history, rules, risk) -> None:

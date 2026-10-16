@@ -5,6 +5,10 @@ import "./style.css";
 
 type Scalar = string | number;
 type SymbolSetting = { symbol: string; enabled: boolean; leverage: number };
+type LeverageSchedule = {
+  symbol: string; maximum_leverage: number; fetched_at: string;
+  brackets: { initial_leverage: number; notional_floor: string; notional_cap: string }[];
+};
 type Risk = { quote_asset: "USDC" | "USDT"; policy: Record<string, Scalar>; symbols: SymbolSetting[] };
 type Config<T> = { version: number; configuration: T | null; defaults: T | null };
 type Auth = { authenticated: boolean; username: string | null; csrf_token: string; expires_at: string };
@@ -28,7 +32,6 @@ const suggestedRisk: Risk = {
     maximum_stop_distance_fraction: "0.05",
     minimum_reward_to_risk: "2",
     maximum_open_positions: 3,
-    maximum_leverage: 5,
     maximum_account_age: "PT15S",
     maximum_market_age: "PT15S",
   },
@@ -46,6 +49,8 @@ function App() {
   const [tab, setTab] = useState("settings");
   const [version, setVersion] = useState(0);
   const [risk, setRisk] = useState<Risk>(suggestedRisk);
+  const [leverageSchedules, setLeverageSchedules] = useState<LeverageSchedule[]>([]);
+  const [leverageError, setLeverageError] = useState("");
   const [strategy, setStrategy] = useState<Record<string, Scalar>>({});
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [initialized, setInitialized] = useState({ risk: false, strategy: false });
@@ -89,6 +94,7 @@ function App() {
 
   async function loadSettings() {
     setSettingsLoaded(false);
+    setLeverageSchedules([]); setLeverageError("");
     const [r, s] = await Promise.all([
       api<Config<Risk>>("/api/config/risk"),
       api<Config<Record<string, Scalar>>>("/api/config/strategy"),
@@ -98,6 +104,12 @@ function App() {
     setRisk(r.configuration ?? structuredClone(suggestedRisk));
     setStrategy(s.configuration ?? s.defaults ?? {});
     setInitialized({ risk: r.configuration !== null, strategy: s.configuration !== null });
+    try {
+      const leverage = await api<{ items: LeverageSchedule[] }>("/api/market/leverage");
+      setLeverageSchedules(leverage.items);
+    } catch (failure) {
+      setLeverageError(failure instanceof Error ? failure.message : "Binance leverage verification failed.");
+    }
     setSettingsLoaded(true);
   }
 
@@ -165,6 +177,9 @@ function App() {
     if (!settingsLoaded || (kind === "strategy" && Object.keys(strategy).length === 0)) return;
     void attempt(async () => {
       if (kind === "risk" && risk.symbols.length === 0) throw new Error("Choose at least one asset before saving.");
+      if (kind === "risk" && risk.symbols.some(s => !leverageSchedules.some(b => b.symbol === s.symbol))) {
+        throw new Error("Verify Binance leverage brackets for every selected asset before saving.");
+      }
       await api(`/api/config/${kind}`, "PUT", {
         expected_version: version, configuration: kind === "risk" ? risk : strategy,
       });
@@ -212,27 +227,36 @@ function App() {
                 if (risk.symbols.length && !confirm(`Switch to ${quote}? This clears the asset selections in this unsaved form. Choose verified ${quote} contracts; saved settings and existing runs are unchanged until you save.`)) return;
                 setRisk({ ...risk, quote_asset: quote, symbols: [] });
               }}><option>USDC</option><option>USDT</option></select></label>
-              <p>Decimal limits use exact strings. Fractions are 0–1, not percentages. Age fields use ISO 8601 durations (e.g. PT15S). The platform supports up to 50×, but your policy limit still applies. Higher leverage increases liquidation risk; it never increases the stop-loss budget. Public metadata does not verify account-specific Binance leverage brackets.</p>
-              {Object.entries(risk.policy).map(([key, value]) => <label key={key}>{key === "maximum_leverage" ? "Portfolio leverage limit (×)" : label(key)}
+              <p>Decimal limits use exact strings. Fractions are 0–1, not percentages. Set leverage independently for each asset, up to your Binance production account’s verified maximum. Larger positions have lower leverage limits; simulation sizing also respects the matching notional bracket. Higher leverage increases liquidation risk, not the stop-loss budget.</p>
+              {leverageError && <p role="alert" className="error">{leverageError} Leverage controls and risk saves need verified brackets. Use Reload settings to retry; existing selections are unchanged.</p>}
+              <p>Bracket limits are a current production-account snapshot, not historical guarantees or permission to trade live. New runs refresh the snapshot; existing runs retain their recorded limits.</p>
+              {Object.entries(risk.policy).filter(([key]) => key !== "maximum_leverage").map(([key, value]) => <label key={key}>{key === "maximum_account_age" ? "Maximum balance-data age (ISO duration)" : key === "maximum_market_age" ? "Maximum price-data age (ISO duration)" : label(key)}
                 {key === "basis" ? <select value={value} onChange={e => setRisk({ ...risk, policy: { ...risk.policy, [key]: e.target.value } })}>
                   <option value="available_balance">available balance</option><option value="equity">equity</option>
                 </select> : <input required type={typeof value === "number" ? "number" : "text"} step="1"
-                  min={key === "maximum_leverage" ? 1 : undefined} max={key === "maximum_leverage" ? 50 : undefined}
                   value={value} onChange={e => setRisk({ ...risk, policy: { ...risk.policy, [key]: typeof value === "number" ? Number(e.target.value) : e.target.value } })} />}
+                {key === "maximum_account_age" && <small>How old a balance/equity snapshot may be before new entries are blocked. Not the age of your Binance account. PT15S means 15 seconds. Simulation creates a balance snapshot for each bar.</small>}
+                {key === "maximum_market_age" && <small>How old the price snapshot may be before new entries are blocked. PT15S means 15 seconds; PT1M means 1 minute. Prevents sizing from stale prices; this is not the candle interval or holding time.</small>}
               </label>)}
               <AssetPicker quote={risk.quote_asset} selected={risk.symbols.map(s => s.symbol)} onAdd={symbol => setRisk(previous =>
                 previous.symbols.some(item => item.symbol === symbol) ? previous : { ...previous, symbols: [...previous.symbols, { symbol, leverage: 1, enabled: true }] }
               )} />
               <h3>Selected assets ({risk.symbols.length})</h3>
-              <p>Enable an asset to make it available for new research and paper runs. Set its leverage at or below your portfolio limit. Existing run snapshots do not change.</p>
+              <p>Enable an asset to make it available for new research and paper runs. There is no separate portfolio leverage limit. Existing run snapshots do not change.</p>
               {risk.symbols.length === 0 && <p>Select at least one asset from the directory above.</p>}
-              {risk.symbols.map((s, index) => <div className="symbol" key={s.symbol}>
+              {risk.symbols.map((s, index) => {
+                const schedule = leverageSchedules.find(item => item.symbol === s.symbol);
+                const eligible = schedule?.brackets.filter(b => b.initial_leverage >= s.leverage);
+                const cap = eligible?.length ? eligible[eligible.length - 1].notional_cap : null;
+                return <div className="symbol" key={s.symbol}>
                 <div><strong>{assetLabel(s.symbol, risk.quote_asset)}</strong><small>{s.symbol} · Perpetual</small></div>
-                <label>Trade leverage (×)<input aria-label={`Leverage for ${s.symbol}`} type="number" required min={1} max={Math.min(50, Number(risk.policy.maximum_leverage))} step={1} value={s.leverage} onChange={e => changeSymbol(index, { leverage: Number(e.target.value) })} /></label>
+                <label>Trade leverage (×)<input aria-label={`Leverage for ${s.symbol}`} type="number" required min={1} max={schedule?.maximum_leverage} disabled={!schedule} step={1} value={s.leverage} onChange={e => changeSymbol(index, { leverage: Number(e.target.value) })} />
+                  <small>{schedule ? `Binance maximum ${schedule.maximum_leverage}× · ${s.leverage}× notional cap: ${cap ?? "not allowed"} ${risk.quote_asset} · verified ${new Date(schedule.fetched_at).toLocaleString()}` : "No verified Binance brackets for this asset. Reload settings or remove it; saving is blocked."}</small>
+                </label>
                 <label className="check"><input type="checkbox" checked={s.enabled} onChange={e => changeSymbol(index, { enabled: e.target.checked })} />Enabled</label>
                 <button type="button" aria-label={`Remove ${assetLabel(s.symbol, risk.quote_asset)}`} onClick={() => setRisk({ ...risk, symbols: risk.symbols.filter((_, i) => i !== index) })}>Remove</button>
-              </div>)}
-              <button type="submit" disabled={risk.symbols.length === 0}>Save risk settings</button>
+              </div>; })}
+              <button type="submit" disabled={risk.symbols.length === 0 || risk.symbols.some(s => !leverageSchedules.some(b => b.symbol === s.symbol))}>Save risk settings</button>
             </fieldset></form>
           </section>
           <section><h2>Strategy parameters</h2><p>{!settingsLoaded ? "Loading strategy settings and implementation defaults…" : initialized.strategy ? "Saved configuration" : "Not initialized. Implementation defaults shown; save explicitly to initialize."}</p>

@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from futures_bot.backtesting.engine import BacktestConfiguration
 from futures_bot.exchange import BinanceAPIError, BinancePayloadError, BinanceUSDmClient
 from futures_bot.exchange.binance_usdm import ExchangeInformation
+from futures_bot.exchange.leverage import LeverageLookupError, LeverageProvider
 from futures_bot.execution.paper import (
     PaperEvent,
     PaperRun,
@@ -37,9 +38,11 @@ from futures_bot.persistence.repositories import ConfigurationConflict
 from futures_bot.risk.configuration import (
     MissingRiskConfiguration,
     RiskConfiguration,
+    load_risk_configuration,
     save_risk_configuration,
+    verify_leverage_configuration,
 )
-from futures_bot.risk.engine import PLATFORM_MAX_LEVERAGE
+from futures_bot.risk.engine import UNVERIFIED_SIMULATION_MAX_LEVERAGE
 from futures_bot.strategy.configuration import (
     MissingStrategyConfiguration,
     save_strategy_configuration,
@@ -118,7 +121,11 @@ def _csv(rows: list[dict[str, Any]], fields: list[str]) -> Response:
 
 
 def configure_web(
-    app: FastAPI, session_factory: sessionmaker[Session], settings: WebAuthSettings
+    app: FastAPI,
+    session_factory: sessionmaker[Session],
+    settings: WebAuthSettings,
+    *,
+    leverage_provider: LeverageProvider | None = None,
 ) -> None:
     """Register routes after migrations, before serving; never creates database tables."""
     app.openapi_url = None
@@ -134,6 +141,10 @@ def configure_web(
     allowed_hosts = {urlsplit(origin).netloc.lower() for origin in settings.allowed_origins}
     market_cache: dict[str, tuple[float, ExchangeInformation]] = {}
     market_lock = asyncio.Lock()
+
+    @app.exception_handler(LeverageLookupError)
+    async def leverage_error(_: Request, exc: LeverageLookupError) -> JSONResponse:
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
@@ -353,7 +364,7 @@ def configure_web(
         return {
             "quote_asset": quote_asset,
             "environment": environment,
-            "platform_max_leverage": PLATFORM_MAX_LEVERAGE,
+            "unverified_simulation_max_leverage": UNVERIFIED_SIMULATION_MAX_LEVERAGE,
             "exchange_leverage_verified": False,
             "items": [
                 {
@@ -365,6 +376,21 @@ def configure_web(
                 for item in sorted(
                     cached[1].tradable_symbols(quote_asset), key=lambda item: item.symbol
                 )
+            ],
+        }
+
+    @app.get("/api/market/leverage")
+    async def market_leverage() -> dict[str, Any]:
+        if leverage_provider is None:
+            raise HTTPException(503, "Binance read-only leverage verification is not configured")
+        schedules = await leverage_provider.schedules()
+        return {
+            "environment": "production",
+            "exchange_leverage_verified": True,
+            "cache_seconds": 60,
+            "items": [
+                {**item.model_dump(mode="json"), "maximum_leverage": item.maximum_leverage}
+                for item in sorted(schedules, key=lambda item: item.symbol)
             ],
         }
 
@@ -384,15 +410,23 @@ def configure_web(
             }
 
     @app.put("/api/config/{kind}")
-    def put_configuration(kind: str, body: ConfigurationInput, request: Request) -> dict[str, Any]:
+    async def put_configuration(
+        kind: str, body: ConfigurationInput, request: Request
+    ) -> dict[str, Any]:
         if kind not in {"risk", "strategy"}:
             raise HTTPException(404, "unknown configuration")
         try:
+            risk = None
+            if kind == "risk":
+                risk = RiskConfiguration.model_validate(body.configuration)
+                if leverage_provider is not None:
+                    risk = await verify_leverage_configuration(risk, leverage_provider)
             with session_factory.begin() as session:
                 if kind == "risk":
+                    assert risk is not None
                     version = save_risk_configuration(
                         session,
-                        RiskConfiguration.model_validate(body.configuration),
+                        risk,
                         actor=request.state.owner_username,
                         expected_version=body.expected_version,
                     )
@@ -502,7 +536,8 @@ def configure_web(
             "available": True,
             "live_trading_enabled": False,
             "note": "Runs start paused. A separate worker processes closed bars; "
-            "request handlers never contact the exchange.",
+            "creation verifies read-only production-account leverage brackets. "
+            "No exchange orders or leverage changes are submitted.",
             "simulation_defaults": BacktestConfiguration.model_validate(
                 {"starting_balance": "1000"}
             ).model_dump(mode="json"),
@@ -535,8 +570,15 @@ def configure_web(
             return {"items": [paper_record(row) for row in rows]}
 
     @app.post("/api/paper/runs", status_code=201)
-    def paper_create(body: PaperCreateInput, request: Request) -> dict[str, Any]:
+    async def paper_create(body: PaperCreateInput, request: Request) -> dict[str, Any]:
         try:
+            verified_risk = None
+            if leverage_provider is not None:
+                with session_factory() as session:
+                    saved = load_risk_configuration(session)
+                verified_risk = await verify_leverage_configuration(
+                    saved.configuration, leverage_provider
+                )
             with session_factory.begin() as session:
                 row = create_paper_run(
                     session,
@@ -545,6 +587,8 @@ def configure_web(
                     environment=body.environment,
                     start=body.start,
                     actor=request.state.owner_username,
+                    risk_override=verified_risk,
+                    expected_risk_version=saved.version if verified_risk is not None else None,
                 )
                 result = paper_record(row)
         except (MissingRiskConfiguration, MissingStrategyConfiguration) as exc:
