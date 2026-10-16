@@ -7,11 +7,15 @@ shared strategy and risk components.
 
 ## Safety status
 
-- The initial service exposes only a read-only liveness endpoint.
+- An optional authenticated operator dashboard supports configuration,
+  historical research, audits, and persistent single-symbol paper trading.
 - Trading mode is restricted to `backtest` or `paper`.
-- Live execution, exchange credentials, authentication, and automated trading
-  loops are not implemented yet.
-- Do not run this foundation as a trading bot or treat `/health` as readiness.
+- A public-data worker processes simulated closed-bar trades; it cannot
+  submit exchange orders. Exchange API credentials are not required.
+- The guarded live coordinator is an unconnected building block, not a
+  usable live Binance adapter. There is no live activation route.
+- `/health` reports liveness; `/ready` checks dashboard/database startup,
+  not safe trading or exchange connectivity.
 - No profitability or deployment claims are made.
 
 ## Futures, cryptocurrency, and liability disclaimer
@@ -55,16 +59,15 @@ pytest
 ruff check .
 ```
 
-Run the local API on loopback only:
+Run the initial liveness-only API on loopback:
 
 ```bash
 python -m futures_bot
 ```
 
 The service binds to `127.0.0.1:8000`. `GET /health` reports process liveness
-and the selected non-secret mode/environment; it does not prove database or
-exchange readiness. API documentation routes are disabled until authentication
-is implemented.
+and the selected non-secret mode/environment. API documentation routes remain
+disabled. To enable the dashboard, follow the authenticated setup below.
 
 ## Configuration
 
@@ -99,9 +102,88 @@ historical candle cache. Initialize a new database with:
 alembic upgrade head
 ```
 
-The service does not yet connect to this schema; persistence integration is a
-later milestone. Migrations use the configured `BOT_DATABASE_URL` and do not
-automatically create or upgrade a database on application startup.
+Dashboard startup requires the current migrated schema and a built frontend.
+Migrations use `BOT_DATABASE_URL` and never run automatically on startup.
+The schema also includes persisted owner authentication sessions/login
+throttles and transactional paper-run checkpoints/events.
+
+## Authenticated dashboard
+
+Build the local React/TypeScript frontend and create the owner account:
+
+```bash
+npm --prefix frontend ci
+npm --prefix frontend run build
+alembic upgrade head
+python -m futures_bot.web.bootstrap \
+  --database-url sqlite:///./data/futures_platform.sqlite3 --username owner
+```
+
+Bootstrap prompts for the password without echoing it. For unattended secure
+provisioning, `--password-file` accepts an owner-only regular file; never put
+the password on the command line or commit it. There is no public registration.
+
+For **loopback-only development**, start with:
+
+```bash
+BOT_DASHBOARD_ENABLED=true \
+BOT_PUBLIC_ORIGIN=http://127.0.0.1:8000 \
+BOT_SECURE_COOKIES=false \
+python -m futures_bot
+```
+
+Open `http://127.0.0.1:8000`. Remote deployments require HTTPS, secure cookies,
+the exact `BOT_PUBLIC_ORIGIN`, and the least-privilege deployment configuration.
+Insecure-cookie mode rejects remote origins. Passwords are scrypt-hashed;
+opaque sessions are server-side, expiring, HttpOnly, SameSite-strict cookies,
+with CSRF checks on mutations, Host/Origin enforcement, and persistent login
+throttles. Secrets and exchange credentials are not sent to the browser.
+
+The UI exposes USDC/USDT, per-symbol leverage, all risk and strategy settings,
+optimistic configuration versions, audit events, historical research,
+CSV/JSON results, and paper controls. Suggested settings on a fresh install
+are **not saved or activated** until explicitly submitted. Research calls
+use public production market data and the saved settings, with one request
+at a time per application process and a 30-day range bound.
+
+## Persistent paper operation
+
+After reviewing/saving risk and strategy settings, create a paper run in the
+dashboard. It starts paused and snapshots those settings; later settings edits
+do not silently alter a running simulation. Select production **public market
+data** for realistic USDC coverage; this never selects real-money execution.
+
+Run the separate public-data worker against the same database:
+
+```bash
+python -m futures_bot.execution.worker
+```
+
+Only one simulated portfolio/symbol is active at a time. Pause blocks entries
+while continuing protection simulation. Stop drains an open position through
+its existing stop/target/time stop; it does not pretend to flatten at an
+unobserved price. Closed-bar checkpoints, ledger records, and account state
+commit atomically; repeated delivery/restarts cannot duplicate fills.
+
+The worker recovers at most 24 hours of contiguous bars, rejects entry on
+bars over 90 seconds late, and explicitly faults on gaps/outages. Acknowledging
+a fault returns to paused, not running. Review its reason and service logs
+before recovery. Protection is simulated only while valid data is available;
+no orders protect real money. Funding, fees, slippage and liquidation retain
+the research engine's conservative assumptions.
+
+## Backup and deployment operations
+
+See [deployment procedures](deploy/README.md) for service templates, TLS/LAN
+reverse proxy configuration, explicit activation, backup verification and
+restore/rollback prerequisites. The installer records a release environment
+snapshot; transitive Python/build dependencies are not yet hash-locked.
+Operational notes in this repository are not proof of a completed deployment.
+
+SQLite backup uses the online backup API, integrity/foreign-key checks,
+owner-only output and no-overwrite publication. Restore requires explicit
+confirmation that both writers are stopped. Backups contain account/session
+data and must be protected as private operational state.
 
 ## Public exchange data
 
@@ -139,8 +221,7 @@ fetching, API controls, and paper-loop integration remain pending.
 
 ## Operator configuration
 
-The web-based configuration screen and its authenticated API are planned and
-not yet implemented. The typed backend risk configuration stores the required
+The web-based configuration screen and authenticated API store the required
 risk policy and unique per-symbol settings under `risk` in the versioned
 runtime configuration. Leverage defaults to 1x, must be an integer, and cannot
 exceed the policy cap or the platform's 20x ceiling. Entry evaluation applies
@@ -163,9 +244,9 @@ JSON floating-point policy inputs are rejected. Durations serialize as
 ISO 8601 durations such as `"PT15S"`. Risk budgets must be explicitly
 configured; loading missing settings does not create default trading limits.
 
-Do not treat editing `.env` as the supported operator UI. The service still
-has no authentication or state-changing configuration endpoint; these backend
-helpers are preparation for the authenticated dashboard, not exposed controls.
+Use the authenticated UI for routine settings; `.env` remains host bootstrap
+configuration, not the trading control plane. All changes preserve unrelated
+runtime fields and use the shared optimistic version/audit transaction.
 
 When upgrading an older installation, run `alembic upgrade head`. Account
 snapshots without a recorded denomination are retained as `UNKNOWN` and
@@ -184,7 +265,7 @@ tick rounding. Unfilled setups invalidate at the stop or expire after three
 bars; positions have an eight-bar time stop. Bar ambiguity resolves stop-first,
 and adverse opening gaps are not filled at a fictitious trigger/stop price.
 
-Parameters are typed, serializable, and versioned for future web forms. Saving
+Parameters are typed, serializable, versioned, and editable in the dashboard. Saving
 operator strategy settings uses the shared runtime version and audit, while
 retaining immutable parameter snapshots. Each generated setup carries its
 implementation version and configuration checksum. Incomplete candles cannot

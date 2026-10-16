@@ -15,6 +15,7 @@ from sqlalchemy import (
     Numeric,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -248,7 +249,14 @@ class Fill(Base):
 class Position(Base):
     __tablename__ = "positions"
     __table_args__ = (
-        UniqueConstraint("mode", "symbol", "side", name="uq_position_mode_symbol_side"),
+        Index(
+            "uq_position_open_mode_symbol_side",
+            "mode",
+            "symbol",
+            "side",
+            unique=True,
+            sqlite_where=text("status = 'open'"),
+        ),
         CheckConstraint("side IN ('long', 'short')", name="ck_position_side"),
         Index("ix_positions_mode_status", "mode", "status"),
     )

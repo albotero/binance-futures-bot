@@ -1,0 +1,41 @@
+[Unit]
+Description=Futures paper execution worker (no live trading)
+After=network-online.target futures-platform.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=futures-bot
+Group=futures-bot
+WorkingDirectory=@APP_ROOT@
+EnvironmentFile=/etc/futures-platform/runtime.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/env BOT_MODE=paper BOT_EXCHANGE_ENVIRONMENT=testnet BOT_LIVE_TRADING_ENABLED=false @APP_ROOT@/.venv/bin/python -m futures_bot.execution.worker
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+UMask=0077
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/futures-platform
+ReadOnlyPaths=@APP_ROOT@ /etc/futures-platform
+InaccessiblePaths=/var/backups/futures-platform /var/cache/futures-build
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LimitCORE=0
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

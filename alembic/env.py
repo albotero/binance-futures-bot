@@ -5,8 +5,10 @@ from alembic.autogenerate.api import AutogenContext
 
 from alembic import context
 from futures_bot.config import Settings
+from futures_bot.execution import paper  # noqa: F401
 from futures_bot.persistence.database import make_engine
 from futures_bot.persistence.models import Base, UTCDateTime
+from futures_bot.web import models as web_models  # noqa: F401
 
 config = context.config
 if config.config_file_name is not None:
