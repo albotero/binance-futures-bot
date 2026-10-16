@@ -215,8 +215,43 @@ adverse-extreme stress test using explicit maintenance/fee assumptions, not
 Binance bracket-accurate liquidation. Exchange rules are static over a run.
 An empty funding series explicitly models zero funding, not verified coverage.
 Gaps, costs, and slippage can exceed gross risk estimates or invalidate the
-required reward-to-risk ratio. Multi-symbol allocation, walk-forward
-validation, optimization, and dashboard orchestration are not implemented yet.
+required reward-to-risk ratio. Multi-symbol allocation and dashboard
+orchestration are not implemented yet.
+
+### Chronological validation and parameter search
+
+`backtesting.validation.run_walk_forward_search` evaluates the baseline and
+an explicit, deterministic set of candidate strategy configurations.
+`ValidationPlan` defines ordered training/validation folds and a final
+holdout, with purge gaps covering the longest candidate entry-plus-exit
+horizon. Later candles and funding do not reach earlier backtests.
+Previously closed bars may warm indicators; trading does not occur in purge
+gaps. Each window starts from the same simulated capital with no positions.
+
+Search is deliberately bounded: at most 16 strategies including the baseline,
+12 folds, and a configurable budget capped at 128 backtests. Risk limits,
+quote asset, leverage, and cost assumptions remain fixed across trials.
+Default eligibility requires at least 20 training and 10 validation trades
+per fold, drawdown no greater than 20%, no halted simulation, and positive
+validation return in every fold. These research gates do not initialize or
+replace operator risk settings.
+
+Eligible candidates rank by their worst validation return minus drawdown
+penalty, then mean score, with deterministic checksum tie-breaking. Selection
+is frozen before the holdout is evaluated. If no candidate qualifies, the
+report explicitly selects none; the baseline holdout is still reported.
+All trials, rejection reasons, scores, dataset checksums, assumptions, and
+holdout results serialize to JSON and can be stored transactionally through
+`backtesting.results.save_validation_result`, with an audit event and no
+runtime-configuration changes.
+
+This is parameter research, **not a trained predictive ML model** or proof of
+profitability. Validation periods guide selection; only the final holdout is
+excluded from selection within a run. Repeatedly revising candidates after
+viewing that holdout contaminates it. Fold returns are not a compounded
+portfolio, and a failed holdout must not be hidden or used for automatic
+promotion. No model training, dashboard search controls, or trading
+activation is introduced.
 
 ## Roadmap
 
