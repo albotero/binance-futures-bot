@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Context, Decimal, localcontext
 from typing import Literal
@@ -25,11 +25,12 @@ from futures_bot.strategy.pullback import (
     TimeframePair,
     _validate_candles,
     adverse_fill_price,
+    market_direction,
     net_reward_to_risk_passes,
 )
 
 ZERO = Decimal(0)
-BACKTEST_VERSION = "single-symbol-bars-v5"
+BACKTEST_VERSION = "single-symbol-bars-v6"
 
 
 class BacktestConfiguration(BaseModel):
@@ -150,7 +151,8 @@ def run_backtest(
     *,
     start: datetime,
     end: datetime,
-    timeframes: TimeframePair = DEFAULT_TIMEFRAMES,
+    timeframes: TimeframePair | None = None,
+    market_candles: Sequence[Kline] = (),
 ) -> BacktestResult:
     """Run one symbol with no network access and at most one open position."""
     with localcontext(Context(prec=40)):
@@ -165,7 +167,8 @@ def run_backtest(
             configuration,
             start=start,
             end=end,
-            timeframes=timeframes,
+            timeframes=timeframes or strategy.timeframes,
+            market_candles=market_candles,
         )
 
 
@@ -182,7 +185,10 @@ def _run_backtest(
     start: datetime,
     end: datetime,
     timeframes: TimeframePair = DEFAULT_TIMEFRAMES,
+    market_candles: Sequence[Kline] = (),
 ) -> BacktestResult:
+    if strategy.profile == "hourly_market":
+        market_direction(market_candles, as_of=start)
     if timeframes not in TIMEFRAME_PAIRS:
         raise ValueError("unsupported entry/trend timeframe pair")
     entry_interval, trend_interval = timeframes
@@ -221,6 +227,7 @@ def _run_backtest(
         minimum_reward_to_risk=risk.policy.minimum_reward_to_risk,
         expected_fee_fraction=configuration.fee_fraction,
         timeframes=timeframes,
+        market_candles=market_candles,
     )
     _require_history(initial.reason)
     rates = _validate_funding(funding_rates, symbol, start, end)
@@ -274,11 +281,17 @@ def _run_backtest(
                 minimum_reward_to_risk=risk.policy.minimum_reward_to_risk,
                 expected_fee_fraction=configuration.fee_fraction,
                 timeframes=timeframes,
+                market_candles=market_candles,
             )
             observations[evaluation.reason] = observations.get(evaluation.reason, 0) + 1
             _require_history(evaluation.reason)
             if pending is None:
                 pending = evaluation.setup
+            if pending is not None:
+                if strategy.profile == "hourly_market" and (
+                    market_direction(market_candles, as_of=time) != pending.direction
+                ):
+                    pending = None
             if pending is not None:
                 trigger = evaluate_entry(pending, candle)
                 if trigger.status in ("expired", "invalidated"):
@@ -291,7 +304,7 @@ def _run_backtest(
                         configuration.slippage_fraction,
                         rules.price_tick,
                     )
-                    decision = _size_entry(
+                    decision, entry_leverage = size_entry_with_leverage(
                         pending,
                         price,
                         cash,
@@ -315,7 +328,7 @@ def _run_backtest(
                         quantity = decision.quantity
                         # Fees must fit alongside the reserved margin; never overspend cash.
                         fee = price * quantity * configuration.fee_fraction
-                        margin = price * quantity / symbol_settings.leverage
+                        margin = price * quantity / entry_leverage
                         reserve = (
                             cash if risk.policy.basis == "available_balance" else equity
                         ) * risk.policy.margin_reserve_fraction
@@ -329,7 +342,7 @@ def _run_backtest(
                                 entry_price=price,
                                 entry_time=time,
                                 entry_fee=fee,
-                                leverage=symbol_settings.leverage,
+                                leverage=entry_leverage,
                                 entry_sizing=decision,
                             )
                             entered = True
@@ -434,7 +447,7 @@ def _run_backtest(
         quote_asset=risk.quote_asset,
         start=start,
         end=end,
-        dataset_checksum=_dataset_checksum(hourly, entries, rates, timeframes),
+        dataset_checksum=_dataset_checksum(hourly, entries, rates, timeframes, market_candles),
         configuration_snapshot={
             "engine_version": BACKTEST_VERSION,
             "strategy_version": strategy.implementation,
@@ -443,6 +456,11 @@ def _run_backtest(
             "risk": risk.model_dump(mode="json"),
             "simulation": configuration.model_dump(mode="json"),
             "rules": _json_values(asdict(rules)),
+            **(
+                {"market_filter": {"symbol": f"BTC{risk.quote_asset}", "interval": "1h"}}
+                if strategy.profile == "hourly_market"
+                else {}
+            ),
         },
         trades=tuple(trades),
         equity_curve=tuple(equity_curve),
@@ -491,19 +509,22 @@ def _size_entry(
     *,
     fee_fraction: Decimal = ZERO,
     stop_slippage_fraction: Decimal = ZERO,
+    portfolio_override: PortfolioState | None = None,
+    available_balance: Decimal | None = None,
+    open_exposure: Decimal = ZERO,
 ) -> RiskDecision:
     account = AccountState(
         wallet_balance=max(ZERO, cash),
-        available_balance=max(ZERO, cash),
+        available_balance=max(ZERO, cash if available_balance is None else available_balance),
         equity=max(ZERO, equity),
         unrealized_pnl=ZERO,
         realized_pnl=realized_pnl,
         used_initial_margin=ZERO,
-        open_exposure=ZERO,
+        open_exposure=open_exposure,
         captured_at=time,
         quote_asset=risk.quote_asset,
     )
-    portfolio = PortfolioState(
+    portfolio = portfolio_override or PortfolioState(
         open_position_count=0,
         aggregate_open_risk=ZERO,
         daily_loss=max(ZERO, day_open_equity - equity),
@@ -530,7 +551,10 @@ def _size_entry(
         fee_fraction=fee_fraction,
         stop_slippage_fraction=stop_slippage_fraction,
     )
-    decision = size_position(request, account, portfolio, risk.policy, now=time)
+    policy = risk.policy
+    if risk.daily_loss_fraction:
+        policy = replace(policy, maximum_daily_loss=day_open_equity * risk.daily_loss_fraction)
+    decision = size_position(request, account, portfolio, policy, now=time)
     if decision.accepted and setup.minimum_reward_to_risk is not None:
         reward = (
             setup.target_price - price if setup.direction == "long" else price - setup.target_price
@@ -559,6 +583,70 @@ def _size_entry(
                 stop_distance=decision.stop_distance,
             )
     return decision
+
+
+def size_entry_with_leverage(
+    setup: EntrySetup,
+    price: Decimal,
+    cash: Decimal,
+    equity: Decimal,
+    realized_pnl: Decimal,
+    time: datetime,
+    peak: Decimal,
+    day_open_equity: Decimal,
+    rules: SymbolRules,
+    risk: RiskConfiguration,
+    leverage: int,
+    *,
+    fee_fraction: Decimal = ZERO,
+    stop_slippage_fraction: Decimal = ZERO,
+    portfolio_override: PortfolioState | None = None,
+    available_balance: Decimal | None = None,
+    open_exposure: Decimal = ZERO,
+) -> tuple[RiskDecision, int]:
+    """Choose lower verified tiers only when the exchange notional bracket binds."""
+    selected = leverage
+
+    def evaluate(candidate: int) -> RiskDecision:
+        return _size_entry(
+            setup,
+            price,
+            cash,
+            equity,
+            realized_pnl,
+            time,
+            peak,
+            day_open_equity,
+            rules,
+            risk,
+            candidate,
+            fee_fraction=fee_fraction,
+            stop_slippage_fraction=stop_slippage_fraction,
+            portfolio_override=portfolio_override,
+            available_balance=available_balance,
+            open_exposure=open_exposure,
+        )
+
+    decision = evaluate(selected)
+    schedule = next((s.leverage_schedule for s in risk.symbols if s.symbol == setup.symbol), None)
+    if risk.leverage_mode == "bracket_aware":
+        if schedule is None:
+            raise ValueError("bracket-aware sizing requires verified Binance leverage brackets")
+        if decision.accepted and "Binance leverage bracket" in decision.sizing_constraints:
+            for candidate in sorted(
+                {b.initial_leverage for b in schedule.brackets if b.initial_leverage < leverage},
+                reverse=True,
+            ):
+                alternative = evaluate(candidate)
+                if alternative.accepted and (
+                    alternative.estimated_stop_loss is not None
+                    and decision.estimated_stop_loss is not None
+                    and alternative.estimated_stop_loss > decision.estimated_stop_loss
+                ):
+                    selected, decision = candidate, alternative
+                if "Binance leverage bracket" not in decision.sizing_constraints:
+                    break
+    return decision, selected
 
 
 def _require_history(reason: str) -> None:
@@ -634,6 +722,7 @@ def _dataset_checksum(
     entries: Sequence[Kline],
     funding: Sequence[FundingRate],
     timeframes: TimeframePair = DEFAULT_TIMEFRAMES,
+    market_candles: Sequence[Kline] = (),
 ) -> str:
     entry_interval, trend_interval = timeframes
     values = {
@@ -645,5 +734,7 @@ def _dataset_checksum(
         ],
         "funding": [asdict(rate) for rate in funding],
     }
+    if market_candles:
+        values["market:1h"] = [asdict(candle) for candle in market_candles]
     canonical = json.dumps(_json_values(values), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("ascii")).hexdigest()

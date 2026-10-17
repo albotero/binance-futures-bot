@@ -10,11 +10,11 @@ type LeverageSchedule = {
   symbol: string; maximum_leverage: number; fetched_at: string;
   brackets: { initial_leverage: number; notional_floor: string; notional_cap: string }[];
 };
-type Risk = { quote_asset: "USDC" | "USDT"; policy: Record<string, Scalar>; symbols: SymbolSetting[] };
+type Risk = { quote_asset: "USDC" | "USDT"; policy: Record<string, Scalar>; symbols: SymbolSetting[]; daily_loss_fraction?: string; leverage_mode?: string };
 type Config<T> = { version: number; configuration: T | null; defaults: T | null };
 type Auth = { authenticated: boolean; username: string | null; csrf_token: string; expires_at: string };
 type Audit = { id: string; actor: string; action: string; created_at: string; details: unknown };
-type PaperRun = { id: string; version: number; status: string; symbol: string; state: Record<string, unknown>; configuration: unknown; updated_at: string };
+type PaperRun = { id: string; version: number; status: string; symbol: string; state: Record<string, unknown>; configuration: { symbols?: string[]; strategy?: Record<string, Scalar> }; updated_at: string };
 type PaperCapabilities = { available: boolean; note: string; simulation_defaults: Record<string, string> };
 
 const suggestedRisk: Risk = {
@@ -61,8 +61,9 @@ function App() {
   const [paperEvents, setPaperEvents] = useState<unknown>(null);
   const [simulation, setSimulation] = useState<Record<string, string>>({});
   const [paperSymbol, setPaperSymbol] = useState("");
+  const [paperPortfolio, setPaperPortfolio] = useState(false);
   const [paperEnvironment, setPaperEnvironment] = useState("testnet");
-  const [paperStart, setPaperStart] = useState(new Date(Math.floor(Date.now() / 900000) * 900000).toISOString());
+  const [paperStart, setPaperStart] = useState(new Date(Math.floor(Date.now() / 3600000) * 3600000).toISOString());
   const [researchStart, setResearchStart] = useState(new Date(Math.floor(Date.now() / 900000) * 900000 - 86400000).toISOString());
   const [researchEnd, setResearchEnd] = useState(new Date(Math.floor(Date.now() / 900000) * 900000 - 900000).toISOString());
   const [researchSymbol, setResearchSymbol] = useState("");
@@ -113,21 +114,24 @@ function App() {
   }
 
   async function loadPaper() {
-    const [capabilities, runs, savedRisk] = await Promise.all([
+    const [capabilities, runs, savedRisk, savedStrategy] = await Promise.all([
       api<PaperCapabilities>("/api/paper/capabilities"),
       api<{ items: PaperRun[] }>("/api/paper/runs"),
       api<Config<Risk>>("/api/config/risk"),
+      api<Config<Record<string, Scalar>>>("/api/config/strategy"),
     ]);
     setPaper(capabilities); setPaperRuns(runs.items);
     setSimulation(previous => Object.keys(previous).length ? previous : capabilities.simulation_defaults);
     const saved = savedRisk.configuration;
     setRisk(saved ?? { ...structuredClone(suggestedRisk), symbols: [] });
+    setStrategy({ ...savedStrategy.defaults, ...savedStrategy.configuration });
+    if (savedStrategy.configuration?.profile !== "hourly_market") setPaperPortfolio(false);
     setPaperSymbol(previous => saved?.symbols.some(s => s.enabled && s.symbol === previous)
       ? previous : saved?.symbols.find(s => s.enabled)?.symbol ?? "");
   }
 
   async function controlPaper(run: PaperRun, action: string) {
-    if (!confirm(`Confirm paper ${action} for ${run.symbol}? This affects simulated orders only. Stopping with an open position waits for the worker to close it.`)) return;
+    if (!confirm(`Confirm paper ${action} for ${(run.configuration.symbols?.length ? run.configuration.symbols : [run.symbol]).join(", ")}? This affects simulated orders only. Stopping with open positions waits for their original SL/TP; no timed exit or forced close.`)) return;
     await api(`/api/paper/runs/${encodeURIComponent(run.id)}/control`, "POST", { expected_version: run.version, action });
     await loadPaper();
     setMessage(`Paper ${action} accepted. Live trading remains disabled.`);
@@ -230,6 +234,8 @@ function App() {
               <p>Risk fraction is the account loss budget at SL, not margin or position size. For example, 0.005 means at most 5 USDC of modeled stop loss on a 1,000 USDC selected balance/equity basis. New runs include entry/exit fees and expected stop slippage by default, keep the structural SL unchanged, and round quantity down. Safety caps may use less of that budget; gaps, funding and liquidation can still exceed it.</p>
               {leverageError && <p role="alert" className="error">{leverageError} Leverage controls and risk saves need verified brackets. Use Reload settings to retry; existing selections are unchanged.</p>}
               <p>Bracket limits are a current production-account snapshot, not historical guarantees or permission to trade live. New runs refresh the snapshot; existing runs retain their recorded limits.</p>
+              <label>Daily loss fraction of day-opening equity (0 uses fixed daily amount)<input required value={risk.daily_loss_fraction ?? "0"} onChange={e => setRisk({ ...risk, daily_loss_fraction: e.target.value })} /><small>0.30 means 30%. Recalculated each local day; reserves outstanding portfolio SL risk before sizing new entries. Not a forced-close or guaranteed loss cap.</small></label>
+              <label>Leverage sizing<select value={risk.leverage_mode ?? "fixed"} onChange={e => setRisk({ ...risk, leverage_mode: e.target.value })}><option value="fixed">Fixed selected leverage</option><option value="bracket_aware">Selected maximum; lower verified tiers when Binance notional bracket binds</option></select></label>
               {Object.entries(risk.policy).filter(([key]) => key !== "maximum_leverage").map(([key, value]) => <label key={key}>{key === "maximum_account_age" ? "Maximum balance-data age (ISO duration)" : key === "maximum_market_age" ? "Maximum price-data age (ISO duration)" : label(key)}
                 {key === "basis" ? <select value={value} onChange={e => setRisk({ ...risk, policy: { ...risk.policy, [key]: e.target.value } })}>
                   <option value="available_balance">available balance</option><option value="equity">equity</option>
@@ -260,9 +266,10 @@ function App() {
             </fieldset></form>
           </section>
           <section><h2>Strategy parameters</h2><p>{!settingsLoaded ? "Loading strategy settings and implementation defaults…" : initialized.strategy ? "Saved configuration" : "Not initialized. Implementation defaults shown; save explicitly to initialize."}</p>
-            <p>New research and paper runs use confirmed 15-minute and hourly swing support/resistance by default. Stops sit one tick beyond the nearest protective level; targets sit one tick before a qualifying opposing level. The minimum ratio is the larger of the strategy target ratio and the risk minimum, after expected entry slippage. The optional experimental cost filter also checks exit slippage and both trading fees; it is off by default and does not guarantee future funding or gaps. No suitable levels means no trade. Positions have no automatic time limit: SL/TP, liquidation and explicit stop controls still apply. Historical backtests close remaining positions at the dataset boundary for accounting, not because a holding timer expired. Previously created paper runs keep their original snapshots.</p>
+            <p>Classic runs use confirmed 15-minute and hourly swing support/resistance; the hourly market profile uses hourly levels only. Stops sit one tick beyond the nearest protective level; targets sit one tick before a qualifying opposing level. The minimum ratio is the larger of the strategy target ratio and the risk minimum, after expected entry slippage. The optional experimental cost filter also checks exit slippage and both trading fees; it is off by default and does not guarantee future funding or gaps. No suitable levels means no trade. Positions have no automatic time limit or trailing: SL/TP and liquidation still apply. Stop paper waits for protective exits. Historical backtests close remaining positions at the dataset boundary for accounting, not because a holding timer expired. Previously created paper runs keep their original snapshots.</p>
             <form onSubmit={event => save(event, "strategy")}><fieldset disabled={busy || !settingsLoaded || Object.keys(strategy).length === 0}>
-              {Object.entries(strategy).filter(([key]) => !["time_stop_bars", "exit_policy"].includes(key) && (strategy.protection_mode === "legacy_atr" || !["atr_period", "atr_multiplier", "swing_period"].includes(key))).map(([key, value]) => <label key={key}>{key === "reward_multiple" ? "Minimum target reward / risk" : label(key)}{key === "cost_filter" ? <select value={value} onChange={e => setStrategy({ ...strategy, [key]: e.target.value })}>
+              <p>Hourly market profile: closed 1h EMA20/200 alignment and EMA20 pullback, gated by closed BTC 1h EMA20/200 in the selected quote asset. Hourly structure only, no volume filter, no trailing, no timed exit. Missing or stale BTC history blocks execution.</p>
+              {Object.entries(strategy).filter(([key]) => !["time_stop_bars", "exit_policy"].includes(key) && (strategy.protection_mode === "legacy_atr" || !["atr_period", "atr_multiplier", "swing_period"].includes(key))).map(([key, value]) => <label key={key}>{key === "reward_multiple" ? "Minimum target reward / risk" : label(key)}{key === "profile" ? <select value={value} onChange={e => setStrategy(e.target.value === "hourly_market" ? { ...strategy, profile: "hourly_market", trend_fast_period: 20, trend_slow_period: 200, pullback_period: 20, volume_filter: "disabled", protection_mode: "support_resistance", exit_policy: "protective_only" } : { ...strategy, profile: "classic" })}><option value="classic">Classic 15m / 1h</option><option value="hourly_market">Hourly EMA20/200 + BTC direction</option></select> : key === "cost_filter" ? <select value={value} onChange={e => setStrategy({ ...strategy, [key]: e.target.value })}>
                 <option value="gross_only">Gross price ratio after entry slippage (default)</option>
                 <option value="net_reward_risk">Experimental: reward/risk after fees and exit slippage</option>
               </select> : key === "volume_filter" ? <select value={value} onChange={e => setStrategy({ ...strategy, [key]: e.target.value })}>
@@ -274,7 +281,7 @@ function App() {
               </select> : <input required
                 type={typeof value === "number" ? "number" : "text"} step="1" value={value}
                 onChange={e => setStrategy({ ...strategy, [key]: typeof value === "number" ? Number(e.target.value) : e.target.value })} />}
-                {key === "level_lookback_bars" && <small>Closed bars searched independently on each timeframe; 96 means 24 hours of 15m levels and 96 hours of 1h levels. Broken levels are excluded.</small>}
+                {key === "level_lookback_bars" && <small>Closed bars searched per timeframe; 96 means 96 hours for the hourly profile, or 24 hours of 15m and 96 hours of 1h levels for classic. Broken levels are excluded.</small>}
                 {key === "pivot_confirmation_bars" && <small>Closed candles required on each side of a strict swing high/low. A level cannot be used before its right-hand candles close.</small>}
                 {key === "volume_filter" && <small>Signal-bar base-asset volume must be at least the mean of the preceding 20 closed entry bars, excluding the signal. Applies to new runs only; existing paper snapshots are unchanged.</small>}
               </label>)}
@@ -291,7 +298,7 @@ function App() {
       </section>}
       {tab === "research" && <section><h2>Research runs</h2>
         {!risk.symbols.some(s => s.enabled) && <p>No saved enabled assets. Review and save assets in Settings before starting research.</p>}
-        <details><summary>Run public-data research</summary><p>Uses saved risk and strategy snapshots with public production market data. No exchange orders or setting promotion. Range: 15 minutes–30 days; timestamps must be UTC ISO values aligned to 15-minute opens. This may take several minutes; leave this page open while it runs.</p>
+        <details><summary>Run public-data research</summary><p>Single-symbol research, not a shared multi-asset portfolio backtest. Uses saved snapshots with public production market data. No exchange orders or setting promotion. Range: 15 minutes–30 days (hourly profile: at least one hour). UTC ISO timestamps must align to hourly opens for the hourly profile, otherwise 15-minute opens. This may take several minutes; leave this page open while it runs.</p>
           <form onSubmit={e => { e.preventDefault(); void attempt(async () => {
             const result = await api<{ id: string; result: unknown }>("/api/research/run", "POST", {
               symbol: researchSymbol, start: researchStart, end: researchEnd, simulation: researchSimulation,
@@ -337,17 +344,21 @@ function App() {
         <button disabled={busy} onClick={() => void attempt(loadPaper)}>Refresh paper state</button>
         <div className="columns"><article><h3>Create paused paper run</h3><p>Requires saved strategy and risk settings. A run snapshots both; later setting changes do not affect it. Only one active paper portfolio is allowed.</p>
           <form onSubmit={e => { e.preventDefault(); void attempt(async () => {
-            await api("/api/paper/runs", "POST", { symbol: paperSymbol, environment: paperEnvironment, start: paperStart, simulation });
+            const selected = risk.symbols.filter(s => s.enabled).map(s => s.symbol);
+            if (paperPortfolio && (strategy.profile !== "hourly_market" || !selected.length)) throw new Error("Shared portfolio requires saved hourly strategy and enabled assets.");
+            await api("/api/paper/runs", "POST", { symbol: paperPortfolio ? selected[0] : paperSymbol, symbols: paperPortfolio ? selected : [], environment: paperEnvironment, start: paperStart, simulation });
             await loadPaper(); setMessage("Paper run created paused. Inspect its configuration, then resume explicitly.");
           }); }}><fieldset disabled={busy || !paper?.available}>
-            <label>Enabled symbol<select value={paperSymbol} required onChange={e => setPaperSymbol(e.target.value)}>
+            <label className="check"><input type="checkbox" checked={paperPortfolio} disabled={strategy.profile !== "hourly_market"} onChange={e => setPaperPortfolio(e.target.checked)} />Shared portfolio: all enabled assets</label>
+            <p>One balance and equity, shared margin, daily loss, aggregate SL risk and drawdown. Same-hour signals use alphabetical symbol priority; bar exits cannot fund earlier entries. Existing run snapshots remain unchanged.</p>
+            <label>Enabled symbol<select value={paperSymbol} required={!paperPortfolio} disabled={paperPortfolio} onChange={e => setPaperSymbol(e.target.value)}>
               <option value="">Select saved enabled symbol</option>
               {risk.symbols.filter(s => s.enabled).map(s => <option key={s.symbol} value={s.symbol}>{assetLabel(s.symbol, risk.quote_asset)} · {s.leverage}×</option>)}
             </select></label>
             <label>Market data environment<select value={paperEnvironment} onChange={e => setPaperEnvironment(e.target.value)}>
               <option value="testnet">Testnet market data</option><option value="production">Production public market data (paper only)</option>
             </select></label>
-            <label>First 15-minute bar (UTC ISO timestamp)<input required value={paperStart} onChange={e => setPaperStart(e.target.value)} /></label>
+            <label>First bar (UTC ISO timestamp; hourly profile requires minute 00)<input required value={paperStart} onChange={e => setPaperStart(e.target.value)} /></label>
             {Object.entries(simulation).map(([key, value]) => <label key={key}>{label(key)}{key === "stop_risk_model" ? <select value={value} onChange={e => setSimulation({ ...simulation, [key]: e.target.value })}>
               <option value="fees_and_slippage">Total SL loss including fees and stop slippage (default)</option>
               <option value="price_only">Legacy: price loss only (comparison)</option>
@@ -356,8 +367,14 @@ function App() {
           </fieldset></form>
         </article><article><h3>Persisted paper portfolios</h3>
           {paperRuns.length === 0 && <p>No paper runs recorded.</p>}
-          {paperRuns.map(run => <section key={run.id}><h3>{run.symbol} · {run.status}</h3><p>Version {run.version} · Updated {run.updated_at}</p>
-            <pre>{JSON.stringify(run.state, null, 2)}</pre>
+          {paperRuns.map(run => <section key={run.id}><h3>{run.configuration.symbols?.length ? "Shared portfolio" : run.symbol} · {run.status}</h3>
+            <p>{(run.configuration.symbols?.length ? run.configuration.symbols : [run.symbol]).join(" · ")}</p>
+            <p>Version {run.version} · Updated {run.updated_at} · {String(run.configuration.strategy?.profile ?? "classic")}</p>
+            <dl className="research-metrics compact">
+              {(["cash", "equity", "realized_pnl", "daily_open_equity"] as const).map(key => <div className="research-metric" key={key}><dt>{label(key)}</dt><dd>{String(run.state[key] ?? "—")}</dd></div>)}
+              <div className="research-metric"><dt>Open positions</dt><dd>{(run.state.positions && typeof run.state.positions === "object" ? Object.keys(run.state.positions).length : 0) + (run.state.position ? 1 : 0)}</dd></div>
+            </dl>
+            <details><summary>Persisted account state and positions</summary><pre>{JSON.stringify(run.state, null, 2)}</pre></details>
             <div className="paper-controls">
               <button disabled={busy || run.status !== "paused"} onClick={() => void attempt(() => controlPaper(run, "resume"))}>Resume paper</button>
               <button disabled={busy || run.status !== "running"} onClick={() => void attempt(() => controlPaper(run, "pause"))}>Pause paper</button>

@@ -167,6 +167,11 @@ def run_walk_forward_search(
 ) -> ValidationResult:
     """Rank fixed candidates using development folds, then evaluate a frozen choice."""
     configurations = (baseline, *candidates)
+    if any(config.profile != "classic" for config in configurations):
+        raise ValueError(
+            "walk-forward currently supports classic profile only; "
+            "use hourly single-run research with BTC market history"
+        )
     if len(configurations) > 16:
         raise ValueError("search allows at most 16 strategies including the baseline")
     checksums = [configuration.checksum for configuration in configurations]

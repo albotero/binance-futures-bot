@@ -73,6 +73,7 @@ class PaperCreateInput(BaseModel):
     simulation: BacktestConfiguration
     environment: Literal["testnet", "production"] = "testnet"
     start: AwareDatetime
+    symbols: tuple[str, ...] = Field(default=(), max_length=20)
 
 
 class PaperControlInput(BaseModel):
@@ -606,12 +607,14 @@ def configure_web(
     async def paper_create(body: PaperCreateInput, request: Request) -> dict[str, Any]:
         try:
             verified_risk = None
+            verified_version = None
             if leverage_provider is not None:
                 with session_factory() as session:
                     saved = load_risk_configuration(session)
                 verified_risk = await verify_leverage_configuration(
                     saved.configuration, leverage_provider
                 )
+                verified_version = saved.version
             with session_factory.begin() as session:
                 row = create_paper_run(
                     session,
@@ -621,7 +624,8 @@ def configure_web(
                     start=body.start,
                     actor=request.state.owner_username,
                     risk_override=verified_risk,
-                    expected_risk_version=saved.version if verified_risk is not None else None,
+                    expected_risk_version=verified_version,
+                    symbols=body.symbols,
                 )
                 result = paper_record(row)
         except (MissingRiskConfiguration, MissingStrategyConfiguration) as exc:

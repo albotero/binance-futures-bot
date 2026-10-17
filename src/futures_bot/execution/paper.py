@@ -15,8 +15,8 @@ from sqlalchemy.orm import Mapped, Session, mapped_column
 from futures_bot.backtesting.engine import (
     BacktestConfiguration,
     _require_history,
-    _size_entry,
     _slipped_price,
+    size_entry_with_leverage,
 )
 from futures_bot.exchange import FundingRate, Kline, SymbolRules
 from futures_bot.persistence.models import (
@@ -36,6 +36,7 @@ from futures_bot.risk.engine import RiskDecision
 from futures_bot.strategy import EntrySetup, StrategyConfiguration, evaluate_pullback
 from futures_bot.strategy.configuration import load_strategy_configuration
 from futures_bot.strategy.lifecycle import evaluate_entry, evaluate_exit
+from futures_bot.strategy.pullback import market_direction
 
 ZERO = Decimal(0)
 PAPER_VERSION = "paper-closed-bars-v1"
@@ -105,6 +106,8 @@ class PaperState(BaseModel):
     pending: EntrySetup | None = None
     position: PaperPosition | None = None
     fault: str | None = None
+    positions: dict[str, PaperPosition] = Field(default_factory=dict)
+    pendings: dict[str, EntrySetup] = Field(default_factory=dict)
 
 
 class PaperConfiguration(BaseModel):
@@ -116,6 +119,7 @@ class PaperConfiguration(BaseModel):
     strategy: StrategyConfiguration
     simulation: BacktestConfiguration
     runtime_version: int = Field(ge=1)
+    symbols: tuple[str, ...] = ()
 
     @field_validator("simulation", mode="before")
     @classmethod
@@ -148,6 +152,7 @@ def create_paper_run(
     actor: str,
     risk_override: RiskConfiguration | None = None,
     expected_risk_version: int | None = None,
+    symbols: tuple[str, ...] = (),
 ) -> PaperRun:
     from zoneinfo import ZoneInfo
 
@@ -165,14 +170,28 @@ def create_paper_run(
             raise ConfigurationConflict("risk settings changed while verifying leverage; reload")
         risk = type(risk)(version=risk.version, configuration=risk_override)
     strategy = load_strategy_configuration(session)
+    if symbols:
+        if len(symbols) > 20 or len(set(symbols)) != len(symbols):
+            raise ValueError("portfolio requires at most 20 unique symbols")
+        if symbol not in symbols:
+            raise ValueError("primary symbol must belong to the portfolio")
+        if strategy.configuration.profile != "hourly_market":
+            raise ValueError("shared multi-symbol paper requires hourly_market strategy")
+        enabled = {s.symbol for s in risk.configuration.symbols if s.enabled}
+        if not set(symbols) <= enabled:
+            raise ValueError("all portfolio symbols must be enabled in saved risk settings")
+    if strategy.configuration.profile == "hourly_market" and start.minute:
+        raise ValueError("hourly strategy start must align to an hourly open")
     if not any(item.symbol == symbol and item.enabled for item in risk.configuration.symbols):
         raise ValueError("paper symbol must be enabled in saved risk settings")
     configuration = PaperConfiguration(
+        implementation="paper-shared-hourly-v2" if symbols else PAPER_VERSION,
         environment=environment,
         risk=risk.configuration,
         strategy=strategy.configuration,
         simulation=simulation,
         runtime_version=risk.version,
+        symbols=tuple(sorted(symbols)),
     )
     state = PaperState(
         cash=simulation.starting_balance,
@@ -180,7 +199,9 @@ def create_paper_run(
         peak=simulation.starting_balance,
         daily_open_equity=simulation.starting_balance,
         local_day=start.astimezone(ZoneInfo(simulation.reporting_timezone)).date().isoformat(),
-        last_bar=start - timedelta(minutes=15),
+        last_bar=start - timedelta(hours=1)
+        if strategy.configuration.profile == "hourly_market"
+        else start - timedelta(minutes=15),
     )
     row = PaperRun(
         status="paused",
@@ -220,10 +241,10 @@ def control_paper_run(
     elif action == "stop":
         if row.status == "stopped":
             raise ValueError("paper run is already stopped")
-        status = "stopping" if state.position is not None else "stopped"
+        status = "stopping" if state.position is not None or state.positions else "stopped"
     else:
         raise ValueError("unsupported paper action")
-    state = state.model_copy(update={"pending": None})
+    state = state.model_copy(update={"pending": None, "pendings": {}})
     _save(session, row, state, status)
     _audit(session, row.id, actor, f"paper.{action}", {"status": status})
     return row
@@ -234,7 +255,7 @@ def fault_paper_run(session: Session, run_id: str, message: str) -> None:
     if row is None or row.status in ("stopped", "faulted"):
         return
     state = PaperState.model_validate(row.state).model_copy(
-        update={"fault": message, "pending": None}
+        update={"fault": message, "pending": None, "pendings": {}}
     )
     _save(session, row, state, "faulted")
     _audit(session, run_id, "paper-worker", "paper.faulted", {"reason": message})
@@ -249,6 +270,7 @@ def process_paper_bar(
     rules: SymbolRules,
     *,
     now: datetime,
+    market_candles: Sequence[Kline] = (),
 ) -> PaperRun:
     """Commit is caller-owned; a repeated bar is idempotent, gaps fault explicitly."""
     from zoneinfo import ZoneInfo
@@ -269,7 +291,12 @@ def process_paper_bar(
         raise ValueError("paper cannot execute an unclosed candle")
     if candle.open_time <= state.last_bar:
         return row
-    if candle.open_time != state.last_bar + timedelta(minutes=15):
+    duration = (
+        timedelta(hours=1)
+        if configuration.strategy.profile == "hourly_market"
+        else timedelta(minutes=15)
+    )
+    if candle.open_time != state.last_bar + duration:
         fault_paper_run(session, run_id, "missing paper bars; operator reconciliation required")
         return row
     if (
@@ -289,12 +316,13 @@ def process_paper_bar(
         expected_entry_slippage=configuration.simulation.slippage_fraction,
         minimum_reward_to_risk=configuration.risk.policy.minimum_reward_to_risk,
         expected_fee_fraction=configuration.simulation.fee_fraction,
+        market_candles=market_candles,
     )
     _require_history(evaluation.reason)
     # Validate the execution bar as well as preceding strategy inputs.
     from futures_bot.strategy.pullback import _validate_candles
 
-    _validate_candles((candle,), "15m")
+    _validate_candles((candle,), configuration.strategy.timeframes[0])
     with localcontext(Context(prec=40)):
         cash = state.cash
         realized = state.realized_pnl
@@ -314,6 +342,12 @@ def process_paper_bar(
         entered = False
         if position is None and row.status == "running":
             pending = pending or evaluation.setup
+            if (
+                pending is not None
+                and configuration.strategy.profile == "hourly_market"
+                and (market_direction(market_candles, as_of=candle.open_time) != pending.direction)
+            ):
+                pending = None
             if pending is not None:
                 trigger = evaluate_entry(pending, candle)
                 if trigger.status in ("invalidated", "expired"):
@@ -331,7 +365,7 @@ def process_paper_bar(
                         for item in configuration.risk.symbols
                         if item.symbol == row.symbol
                     )
-                    decision = _size_entry(
+                    decision, leverage = size_entry_with_leverage(
                         pending,
                         price,
                         cash,

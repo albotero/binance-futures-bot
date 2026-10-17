@@ -8,7 +8,8 @@ shared strategy and risk components.
 ## Safety status
 
 - An optional authenticated operator dashboard supports configuration,
-  historical research, audits, and persistent single-symbol paper trading.
+  historical research, audits, and persistent single-symbol or shared-account
+  multi-symbol paper trading.
 - Trading mode is restricted to `backtest` or `paper`.
 - A public-data worker processes simulated closed-bar trades; it cannot
   submit exchange orders. Offline research/legacy paper snapshots need no keys.
@@ -108,6 +109,48 @@ leverage on Binance, place orders, or enable live trading. Old/offline snapshots
 without bracket data retain an explicitly unverified 50x simulation ceiling.
 The old policy `maximum_leverage` field remains readable for snapshot
 compatibility only; it no longer constrains leverage and is hidden in the UI.
+
+### Hourly market profile and shared paper account
+
+The opt-in `hourly_market` strategy uses closed 1h candles: EMA20/200 alignment,
+repeated EMA20 pullback confirmations, and a same-direction BTC quote-market
+EMA20/200 filter. SL and >=minimum-R TP use confirmed hourly swing levels;
+missing suitable levels means no trade. Volume confirmation is disabled for
+this profile. There is no trailing stop or holding-time exit. Missing, stale
+or gapped BTC history fails closed.
+
+Select **Shared portfolio: all enabled assets** when creating a paused paper
+run with this saved profile. All selected symbols share one simulated starting
+balance, marked equity, margin, exposure, open-position/aggregate-SL-risk limits,
+daily allowance and drawdown guard. Same-hour entries use alphabetical symbol
+priority, before bar exits; an exit cannot retroactively fund another entry.
+The worker commits each synchronized hourly batch atomically and idempotently,
+retains original SL/TP across restarts, and blocks new entries on recovered bars
+more than 90 seconds late. Pause continues protective exits; stop waits until
+all positions exit. Old run snapshots keep their original behavior.
+
+Root risk setting `daily_loss_fraction` defaults to `0` (the existing fixed
+`maximum_daily_loss`). A nonzero value instead uses that fraction of the
+reporting-local-calendar day's opening marked equity. Intraday profit does not
+expand it. The shared account also reserves outstanding modeled SL losses
+against remaining daily capacity, conservatively retaining original risk even
+when positions show floating profits. `risk_fraction` targets loss at the SL
+including entry/exit fees and expected adverse stop slippage with the default
+`fees_and_slippage` model; rounding, margin and other caps can reduce size.
+It is not a loss guarantee: gaps, funding and liquidation can exceed it.
+
+Root `leverage_mode` defaults to `fixed`. Opt-in `bracket_aware` requires verified
+Binance brackets and tries lower permitted leverage tiers only when a bracket
+caps size, retaining a lower tier only if it permits more modeled SL risk.
+The per-symbol selected leverage remains the ceiling, and actual leverage and
+margin are recorded for every simulated entry.
+
+The drawdown guard only denies new entries, not existing positions; it can
+therefore overshoot, especially when SL risk exceeds the drawdown threshold.
+Dashboard research remains **single-symbol**, not a shared-portfolio historical
+performance claim. Hourly runs record BTC candle provenance in their checksum;
+walk-forward selection currently supports the classic profile only.
+All of this remains paper-only: no Binance orders or leverage mutations.
 
 ## Database schema
 

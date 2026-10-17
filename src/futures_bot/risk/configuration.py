@@ -67,6 +67,15 @@ class RiskConfiguration(BaseModel):
     quote_asset: Literal["USDC", "USDT"] = "USDC"
     policy: RiskPolicy
     symbols: Annotated[tuple[SymbolConfiguration, ...], Field(min_length=1)]
+    daily_loss_fraction: Decimal = Field(default=Decimal("0"), ge=0, le=1, allow_inf_nan=False)
+    leverage_mode: Literal["fixed", "bracket_aware"] = "fixed"
+
+    @field_validator("daily_loss_fraction", mode="before")
+    @classmethod
+    def exact_daily_fraction(cls, value: object) -> object:
+        if not isinstance(value, (str, Decimal)):
+            raise ValueError("daily loss fraction must be an exact decimal string")
+        return value
 
     @field_validator("policy", mode="before")
     @classmethod

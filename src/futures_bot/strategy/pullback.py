@@ -44,6 +44,11 @@ class StrategyConfiguration(BaseModel):
     level_lookback_bars: StrictInt = Field(default=96, ge=10, le=500)
     pivot_confirmation_bars: StrictInt = Field(default=2, ge=1, le=10)
     volume_filter: Literal["signal_above_prior_mean", "disabled"] = "signal_above_prior_mean"
+    profile: Literal["classic", "hourly_market"] = "classic"
+
+    @property
+    def timeframes(self) -> TimeframePair:
+        return ("1h", "1h") if self.profile == "hourly_market" else DEFAULT_TIMEFRAMES
 
     @field_validator("atr_multiplier", "reward_multiple", mode="before")
     @classmethod
@@ -54,6 +59,18 @@ class StrategyConfiguration(BaseModel):
 
     @model_validator(mode="after")
     def ordered_periods(self) -> StrategyConfiguration:
+        if self.profile == "hourly_market" and (
+            self.trend_fast_period != 20
+            or self.trend_slow_period != 200
+            or self.pullback_period != 20
+            or self.volume_filter != "disabled"
+            or self.protection_mode != "support_resistance"
+            or self.exit_policy != "protective_only"
+        ):
+            raise ValueError(
+                "hourly_market requires EMA20/200, EMA20 pullback, structural "
+                "protection, volume disabled and protective-only exits"
+            )
         if self.trend_fast_period >= self.trend_slow_period:
             raise ValueError("trend_fast_period must be below trend_slow_period")
         if self.level_lookback_bars < 2 * self.pivot_confirmation_bars + 1:
@@ -66,6 +83,8 @@ class StrategyConfiguration(BaseModel):
 
     @property
     def implementation(self) -> str:
+        if self.profile == "hourly_market":
+            return "hourly-market-sr-v1"
         if self.volume_filter != "disabled":
             return (
                 "ema-pullback-atr-volume-v4"
@@ -208,6 +227,19 @@ class StrategyEvaluation:
     reason: str
 
 
+def market_direction(candles: Sequence[Kline], *, as_of: datetime) -> Direction | None:
+    closed = tuple(c for c in candles if c.close_time < as_of)
+    _validate_candles(closed, "1h")
+    if len(closed) < 200:
+        raise ValueError("BTC market filter requires 200 closed hourly candles")
+    if as_of - closed[-1].close_time > timedelta(hours=1):
+        raise ValueError("BTC hourly market history is stale")
+    values = [c.close for c in closed]
+    fast = exponential_moving_average(values, 20)[-1]
+    slow = exponential_moving_average(values, 200)[-1]
+    return "long" if fast > slow else "short" if fast < slow else None
+
+
 def exponential_moving_average(values: Sequence[Decimal], period: int) -> tuple[Decimal, ...]:
     if type(period) is not int or period < 2:
         raise ValueError("EMA period must be an integer of at least two")
@@ -257,8 +289,12 @@ def evaluate_pullback(
     expected_entry_slippage: Decimal = Decimal(0),
     minimum_reward_to_risk: Decimal = Decimal(0),
     expected_fee_fraction: Decimal = Decimal(0),
-    timeframes: TimeframePair = DEFAULT_TIMEFRAMES,
+    timeframes: TimeframePair | None = None,
+    market_candles: Sequence[Kline] = (),
 ) -> StrategyEvaluation:
+    timeframes = timeframes or configuration.timeframes
+    if configuration.profile == "hourly_market" and timeframes != ("1h", "1h"):
+        raise ValueError("hourly_market requires hourly entry and trend histories")
     if timeframes not in TIMEFRAME_PAIRS:
         raise ValueError("unsupported entry/trend timeframe pair")
     entry_interval, trend_interval = timeframes
@@ -319,6 +355,9 @@ def evaluate_pullback(
             direction = "short"
         else:
             return StrategyEvaluation(None, "no trend-aligned closed-candle pullback")
+        if configuration.profile == "hourly_market":
+            if market_direction(market_candles, as_of=as_of) != direction:
+                return StrategyEvaluation(None, "BTC hourly market direction rejects setup")
         if configuration.volume_filter != "disabled":
             reference = sum((candle.volume for candle in entries[-21:-1]), Decimal(0)) / 20
             if last.volume < reference:

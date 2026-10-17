@@ -17,6 +17,7 @@ from futures_bot.execution.paper import (
     fault_paper_run,
     process_paper_bar,
 )
+from futures_bot.execution.portfolio import process_portfolio_bar
 from futures_bot.persistence.database import make_engine, make_session_factory
 from futures_bot.persistence.repositories import ConfigurationConflict
 
@@ -37,8 +38,12 @@ async def poll_once(factory: sessionmaker[Session]) -> None:
         state = PaperState.model_validate(row.state)
     async with BinanceUSDmClient(configuration.environment) as client:
         now = await client.server_time()
-        end = now.replace(minute=now.minute // 15 * 15, second=0, microsecond=0)
-        next_open = state.last_bar + timedelta(minutes=15)
+        hourly_profile = configuration.strategy.profile == "hourly_market"
+        duration = timedelta(hours=1) if hourly_profile else timedelta(minutes=15)
+        end = now.replace(
+            minute=0 if hourly_profile else now.minute // 15 * 15, second=0, microsecond=0
+        )
+        next_open = state.last_bar + duration
         if next_open >= end:
             return
         if end - next_open > timedelta(minutes=15 * MAX_RECOVERY_BARS):
@@ -51,6 +56,21 @@ async def poll_once(factory: sessionmaker[Session]) -> None:
                 session.commit()
             return
         strategy = configuration.strategy
+        if configuration.symbols:
+            await _poll_portfolio(factory, client, run_id, configuration, next_open, end, now)
+            return
+        market = ()
+        if hourly_profile:
+            market_data = await fetch_historical_klines(
+                client,
+                f"BTC{configuration.risk.quote_asset}",
+                "1h",
+                next_open - timedelta(hours=250),
+                end - timedelta(milliseconds=1),
+            )
+            if market_data.gaps:
+                raise ValueError("BTC market history has gaps")
+            market = market_data.candles
         hourly, entries, funding, metadata = await asyncio.gather(
             fetch_historical_klines(
                 client,
@@ -62,8 +82,9 @@ async def poll_once(factory: sessionmaker[Session]) -> None:
             fetch_historical_klines(
                 client,
                 symbol,
-                "15m",
-                next_open - timedelta(minutes=15 * (strategy.entry_history_bars + 30)),
+                strategy.timeframes[0],
+                next_open
+                - duration * (max(strategy.entry_history_bars, 200 if hourly_profile else 0) + 50),
                 end - timedelta(milliseconds=1),
             ),
             client.funding_rate_history(
@@ -101,8 +122,55 @@ async def poll_once(factory: sessionmaker[Session]) -> None:
                 funding,
                 contract.rules(),
                 now=now,
+                market_candles=market,
             )
             session.commit()
+
+
+async def _poll_portfolio(factory, client, run_id, configuration, next_open, end, now):
+    market = await fetch_historical_klines(
+        client,
+        f"BTC{configuration.risk.quote_asset}",
+        "1h",
+        next_open - timedelta(hours=250),
+        end - timedelta(milliseconds=1),
+    )
+    metadata = await client.exchange_information()
+    contracts = {c.symbol: c for c in metadata.tradable_symbols(configuration.risk.quote_asset)}
+    histories, funding, rules = {}, {}, {}
+    for symbol in configuration.symbols:
+        if symbol not in contracts:
+            raise ValueError(f"portfolio contract is unavailable: {symbol}")
+        history = await fetch_historical_klines(
+            client, symbol, "1h", next_open - timedelta(hours=250), end - timedelta(milliseconds=1)
+        )
+        if history.gaps or market.gaps:
+            raise ValueError("portfolio market history has missing candles")
+        histories[symbol] = history.candles
+        funding[symbol] = await client.funding_rate_history(
+            symbol,
+            start_time=int(next_open.timestamp() * 1000),
+            end_time=int(end.timestamp() * 1000) - 1,
+            limit=1000,
+        )
+        if len(funding[symbol]) == 1000:
+            raise ValueError("portfolio funding exceeded recovery bound")
+        rules[symbol] = contracts[symbol].rules()
+    cursor = next_open
+    while cursor < end:
+        batch = {
+            s: tuple(c for c in history if c.open_time <= cursor)
+            for s, history in histories.items()
+        }
+        if any(not history or history[-1].open_time != cursor for history in batch.values()):
+            raise ValueError("portfolio batch lacks synchronized candles")
+        with factory() as session:
+            row = session.get(PaperRun, run_id)
+            if row is None or row.status not in ("running", "paused", "stopping"):
+                return
+            process_portfolio_bar(session, run_id, batch, funding, rules, market.candles, now=now)
+            session.commit()
+        cursor += timedelta(hours=1)
 
 
 async def serve(factory: sessionmaker[Session]) -> None:

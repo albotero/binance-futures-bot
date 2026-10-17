@@ -141,6 +141,7 @@ def test_uninitialized_strategy_provides_all_editable_defaults(web):
         "level_lookback_bars": 96,
         "pivot_confirmation_bars": 2,
         "volume_filter": "signal_above_prior_mean",
+        "profile": "classic",
     }
     with factory() as session:
         assert session.get(ApplicationConfiguration, "runtime") is None
@@ -879,3 +880,56 @@ def test_parent_routes_inherit_auth_and_csrf(web):
         ).status_code
         == 200
     )
+
+
+def test_shared_hourly_paper_api_snapshots_one_account_and_rejects_invalid_sets(web):
+    client, _, _ = web
+    headers = {"Origin": ORIGIN, "X-CSRF-Token": login(client)}
+    risk = {
+        **risk_config(),
+        "daily_loss_fraction": "0.30",
+        "leverage_mode": "fixed",
+        "symbols": [{"symbol": s, "enabled": True, "leverage": 50} for s in ("BTCUSDC", "ETHUSDC")],
+    }
+    risk["policy"]["risk_fraction"] = "0.15"
+    assert (
+        client.put(
+            "/api/config/risk", headers=headers, json={"configuration": risk, "expected_version": 0}
+        ).status_code
+        == 200
+    )
+    strategy = {"profile": "hourly_market", "trend_fast_period": 20, "volume_filter": "disabled"}
+    assert (
+        client.put(
+            "/api/config/strategy",
+            headers=headers,
+            json={"configuration": strategy, "expected_version": 1},
+        ).status_code
+        == 200
+    )
+    body = {
+        "symbol": "BTCUSDC",
+        "symbols": ["ETHUSDC", "BTCUSDC"],
+        "simulation": {"starting_balance": "1000"},
+        "environment": "production",
+        "start": "2026-10-16T00:00:00Z",
+    }
+    for invalid in (["ETHUSDC", "ETHUSDC"], ["SOLUSDC"], ["ETHUSDC"]):
+        response = client.post(
+            "/api/paper/runs", headers=headers, json={**body, "symbols": invalid}
+        )
+        assert response.status_code == 422, response.text
+    response = client.post(
+        "/api/paper/runs", headers=headers, json={**body, "start": "2026-10-16T00:15:00Z"}
+    )
+    assert response.status_code == 422
+    response = client.post("/api/paper/runs", headers=headers, json=body)
+    assert response.status_code == 201, response.text
+    run = response.json()
+    assert run["configuration"]["symbols"] == ["BTCUSDC", "ETHUSDC"]
+    assert run["configuration"]["risk"]["daily_loss_fraction"] == "0.30"
+    assert run["configuration"]["risk"]["policy"]["risk_fraction"] == "0.15"
+    assert run["configuration"]["strategy"]["profile"] == "hourly_market"
+    assert run["state"]["cash"] == "1000" and run["state"]["positions"] == {}
+    assert run["state"]["last_bar"] == "2026-10-15T23:00:00Z"
+    assert run["live_trading_enabled"] is False

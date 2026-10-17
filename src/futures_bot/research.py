@@ -61,6 +61,10 @@ async def execute_research(
     ):
         raise ValueError("research symbol must be enabled in saved risk settings")
     parameters = strategy.configuration
+    hourly_profile = parameters.profile == "hourly_market"
+    if hourly_profile and (request.start.minute or request.end.minute):
+        raise ValueError("hourly strategy research dates must align to hourly opens")
+    duration = timedelta(hours=1) if hourly_profile else timedelta(minutes=15)
     async with BinanceUSDmClient("production") as client:
         server_time = await client.server_time()
         if request.end > server_time:
@@ -89,12 +93,26 @@ async def execute_research(
             fetch_historical_klines(
                 client,
                 request.symbol,
-                "15m",
-                request.start - timedelta(minutes=15 * (parameters.entry_history_bars + 50)),
+                parameters.timeframes[0],
+                request.start
+                - duration
+                * (max(parameters.entry_history_bars, 200 if hourly_profile else 0) + 50),
                 request.end - timedelta(milliseconds=1),
                 max_pages=10,
             ),
         )
+        market = None
+        if hourly_profile:
+            market = await fetch_historical_klines(
+                client,
+                f"BTC{risk.configuration.quote_asset}",
+                "1h",
+                request.start - timedelta(hours=250),
+                request.end - timedelta(milliseconds=1),
+                max_pages=10,
+            )
+            if market.gaps:
+                raise ValueError("BTC market filter data has gaps")
         # Funding intervals are not assumed to be fixed at eight hours.
         funding = []
         cursor = int(request.start.timestamp() * 1000)
@@ -130,6 +148,7 @@ async def execute_research(
         request.simulation,
         start=request.start,
         end=request.end,
+        market_candles=market.candles if market else (),
     )
     row = save_backtest_result(session, result, actor=actor)
     return row.id, result
