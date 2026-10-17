@@ -933,3 +933,53 @@ def test_shared_hourly_paper_api_snapshots_one_account_and_rejects_invalid_sets(
     assert run["state"]["cash"] == "1000" and run["state"]["positions"] == {}
     assert run["state"]["last_bar"] == "2026-10-15T23:00:00Z"
     assert run["live_trading_enabled"] is False
+
+
+@pytest.mark.parametrize("web", [True], indirect=True)
+def test_verified_leverage_preserves_daily_percentage_and_mode_in_save_and_paper(web):
+    client, _, _ = web
+    headers = {"Origin": ORIGIN, "X-CSRF-Token": login(client)}
+    risk = {
+        **risk_config(),
+        "daily_loss_fraction": "0.30",
+        "leverage_mode": "bracket_aware",
+        "symbols": [{"symbol": "BTCUSDC", "enabled": True, "leverage": 50}],
+    }
+    response = client.put(
+        "/api/config/risk", headers=headers, json={"configuration": risk, "expected_version": 0}
+    )
+    assert response.status_code == 200, response.text
+    saved = client.get("/api/config/risk").json()["configuration"]
+    assert saved["daily_loss_fraction"] == "0.30"
+    assert saved["leverage_mode"] == "bracket_aware"
+    assert saved["symbols"][0]["leverage_schedule"]["symbol"] == "BTCUSDC"
+    assert (
+        client.put(
+            "/api/config/strategy",
+            headers=headers,
+            json={
+                "configuration": {
+                    "profile": "hourly_market",
+                    "trend_fast_period": 20,
+                    "volume_filter": "disabled",
+                },
+                "expected_version": 1,
+            },
+        ).status_code
+        == 200
+    )
+    response = client.post(
+        "/api/paper/runs",
+        headers=headers,
+        json={
+            "symbol": "BTCUSDC",
+            "symbols": ["BTCUSDC"],
+            "simulation": {"starting_balance": "1000"},
+            "environment": "production",
+            "start": "2026-10-16T00:00:00Z",
+        },
+    )
+    assert response.status_code == 201, response.text
+    snapshot = response.json()["configuration"]["risk"]
+    assert snapshot["daily_loss_fraction"] == "0.30"
+    assert snapshot["leverage_mode"] == "bracket_aware"

@@ -137,9 +137,7 @@ async def verify_leverage_configuration(
             raise ValueError(f"{symbol.symbol} has no verified Binance leverage brackets")
         schedule.notional_limit(symbol.leverage)
         symbols.append(symbol.model_copy(update={"leverage_schedule": schedule}))
-    return RiskConfiguration(
-        quote_asset=configuration.quote_asset, policy=configuration.policy, symbols=tuple(symbols)
-    )
+    return configuration.model_copy(update={"symbols": tuple(symbols)})
 
 
 @dataclass(frozen=True, slots=True)
