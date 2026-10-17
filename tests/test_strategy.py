@@ -189,6 +189,40 @@ def test_volume_requires_full_prior_history_and_has_validated_mode(rules):
     )
 
 
+@pytest.mark.parametrize("short", [False, True])
+def test_single_hourly_ema20_200_alignment_allows_pullback_without_fresh_cross(rules, short):
+    trend, entries = histories(short)
+    entries = tuple(
+        replace(
+            candle,
+            open_time=AS_OF + (candle.open_time - AS_OF) * 4,
+            close_time=AS_OF + (candle.open_time - AS_OF) * 4 + timedelta(hours=1, milliseconds=-1),
+            volume=Decimal(0),
+        )
+        for candle in entries
+    )
+    hourly = (*trend[:-30], *entries)
+    config = StrategyConfiguration(trend_fast_period=20, volume_filter="disabled")
+    result = evaluate_pullback(
+        "BTCUSDT",
+        hourly,
+        hourly,
+        rules,
+        config,
+        as_of=AS_OF,
+        timeframes=("1h", "1h"),
+    )
+    assert result.setup is not None
+    assert result.setup.direction == ("short" if short else "long")
+    assert result.setup.stop_level.timeframe == result.setup.target_level.timeframe == "1h"
+    closes = [candle.close for candle in hourly]
+    fast = exponential_moving_average(closes, 20)
+    slow = exponential_moving_average(closes, 200)
+    # Alignment already existed on the prior bar; no fresh-cross condition.
+    assert (fast[-2] < slow[-2]) if short else (fast[-2] > slow[-2])
+    assert result.setup.expires_at == AS_OF + timedelta(hours=3)
+
+
 @pytest.mark.parametrize("pair", TIMEFRAME_PAIRS)
 @pytest.mark.parametrize("short", [False, True])
 def test_timeframe_pair_controls_closed_history_levels_and_setup_expiry(rules, pair, short):

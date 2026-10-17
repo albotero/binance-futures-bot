@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from futures_bot.backtesting import BacktestConfiguration, BacktestResult, run_backtest
+from futures_bot.backtesting.engine import _dataset_checksum
 from futures_bot.data.candles import next_candle_open
 from futures_bot.exchange import FundingRate, Kline, SymbolRules
 from futures_bot.exchange.leverage import LeverageBracket, LeverageSchedule
@@ -125,8 +126,17 @@ def test_reproducible_decimal_accounting_and_serialization(history, rules, risk)
     assert BacktestResult.model_validate_json(result.model_dump_json()) == result
 
 
+def test_single_timeframe_checksum_keeps_both_history_roles(history):
+    trend, entries = history
+    checksum = _dataset_checksum(trend, entries, (), ("1h", "1h"))
+    assert checksum != _dataset_checksum(trend[:-1], entries, (), ("1h", "1h"))
+    assert checksum != _dataset_checksum(trend, entries[:-1], (), ("1h", "1h"))
+
+
 @pytest.mark.parametrize("pair", TIMEFRAME_PAIRS)
-def test_backtest_uses_real_timeframe_bars_and_records_provenance(history, rules, risk, pair):
+def test_backtest_uses_real_timeframe_bars_and_records_provenance(
+    history, rules, risk, pair, tmp_path
+):
     durations = [next_candle_open(START, interval) - START for interval in pair]
 
     def retime(candles, original, duration):
@@ -163,6 +173,20 @@ def test_backtest_uses_real_timeframe_bars_and_records_provenance(history, rules
     assert result.trades[0].stop_level.timeframe in pair
     assert result.configuration_snapshot["timeframes"] == {"entry": pair[0], "trend": pair[1]}
     assert BacktestResult.model_validate_json(result.model_dump_json()) == result
+    from sqlalchemy.orm import Session
+
+    from futures_bot.backtesting.results import save_backtest_result
+    from futures_bot.persistence.database import create_schema_for_tests, make_engine
+
+    engine = make_engine(f"sqlite:///{tmp_path / 'timeframe.sqlite3'}")
+    create_schema_for_tests(engine)
+    try:
+        with Session(engine) as session:
+            row = save_backtest_result(session, result, actor="research-test")
+            assert row.dataset_metadata["intervals"] == list(dict.fromkeys((pair[1], pair[0])))
+            session.rollback()
+    finally:
+        engine.dispose()
     with pytest.raises(ValueError, match="boundaries must align"):
         run_backtest(
             "BTCUSDC",

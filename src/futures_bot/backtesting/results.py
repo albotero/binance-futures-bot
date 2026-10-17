@@ -7,10 +7,20 @@ from futures_bot.backtesting.engine import BacktestResult, SimulatedTrade
 from futures_bot.backtesting.validation import ValidationResult
 from futures_bot.persistence.models import AuditEvent, BacktestRun, utc_now
 from futures_bot.persistence.repositories import create_backtest_run
+from futures_bot.strategy.pullback import TIMEFRAME_PAIRS
 
 
 def save_backtest_result(session: Session, result: BacktestResult, *, actor: str) -> BacktestRun:
     """Save a completed snapshot and ledger; the caller owns the transaction."""
+    timeframes = result.configuration_snapshot.get("timeframes")
+    intervals = ["1h", "15m"]
+    if timeframes is not None:
+        if (
+            not isinstance(timeframes, dict)
+            or (timeframes.get("entry"), timeframes.get("trend")) not in TIMEFRAME_PAIRS
+        ):
+            raise ValueError("backtest snapshot has unsupported timeframe metadata")
+        intervals = list(dict.fromkeys((timeframes["trend"], timeframes["entry"])))
     row = create_backtest_run(
         session,
         strategy_version=str(result.configuration_snapshot["strategy_version"]),
@@ -21,7 +31,7 @@ def save_backtest_result(session: Session, result: BacktestResult, *, actor: str
             "quote_asset": result.quote_asset,
             "start": result.start.isoformat(),
             "end": result.end.isoformat(),
-            "intervals": ["1h", "15m"],
+            "intervals": intervals,
         },
         actor=actor,
     )

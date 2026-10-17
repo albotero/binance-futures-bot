@@ -454,7 +454,8 @@ raise errors; denied entries include risk rejection reasons.
 
 For offline comparisons only, the optional `timeframes=(entry, trend)` keyword
 on `run_backtest` and `evaluate_pullback` accepts `("5m", "30m")`,
-`("15m", "1h")` (default), `("30m", "2h")`, or `("1h", "4h")`.
+`("15m", "1h")` (default), `("30m", "2h")`, `("1h", "4h")`, or
+`("1h", "1h")` for a single-timeframe hourly trend/pullback comparison.
 Supply **actual matching interval candles**, not relabeled or time-scaled prices.
 Validation, closed-bar selection, stale-history checks, setup expiry and
 structural-level provenance all use the selected intervals. Result snapshots

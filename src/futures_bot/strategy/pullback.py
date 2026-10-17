@@ -21,6 +21,7 @@ TIMEFRAME_PAIRS: tuple[TimeframePair, ...] = (
     ("15m", "1h"),
     ("30m", "2h"),
     ("1h", "4h"),
+    ("1h", "1h"),
 )
 DEFAULT_TIMEFRAMES: TimeframePair = ("15m", "1h")
 

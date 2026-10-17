@@ -637,8 +637,12 @@ def _dataset_checksum(
 ) -> str:
     entry_interval, trend_interval = timeframes
     values = {
-        trend_interval: [asdict(candle) for candle in hourly],
-        entry_interval: [asdict(candle) for candle in entries],
+        f"trend:{trend_interval}" if trend_interval == entry_interval else trend_interval: [
+            asdict(candle) for candle in hourly
+        ],
+        f"entry:{entry_interval}" if trend_interval == entry_interval else entry_interval: [
+            asdict(candle) for candle in entries
+        ],
         "funding": [asdict(rate) for rate in funding],
     }
     canonical = json.dumps(_json_values(values), sort_keys=True, separators=(",", ":"))
